@@ -1,0 +1,118 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+      - "162:1162/udp"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://ncr:ncr@postgres:5432/ncr}
+      TRAP_HOST: 0.0.0.0
+      TRAP_PORT: 1162
+      TRAP_COMMUNITY: public
+      FLAP_WINDOW_SECONDS: 600
+      FLAP_TRANSITION_THRESHOLD: 4
+      CORS_ORIGINS: "*"
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # The postgis/postgis image restarts itself once internally after
+    # initdb to load the extension - pg_isready can report healthy for a
+    # few seconds mid-restart, so the backend's first connection attempt
+    # can lose this race on a router's very first `docker compose up`.
+    # It doesn't retry that attempt on its own, so let compose restart it.
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Default database: Postgres with the PostGIS extension, used for router
+  # geolocation (Router.location) and the nearest-router spatial lookup -
+  # see app/models.py and api/routers.py. To use plain SQLite or MySQL
+  # instead (no spatial queries), set DATABASE_URL in .env and remove
+  # `depends_on` above - see "Switching the database" in the README.
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: ncr
+      POSTGRES_PASSWORD: ncr
+      POSTGRES_DB: ncr
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "ncr", "-d", "ncr"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  simulator:
+    build: ./simulator
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      BACKEND_API_URL: http://backend:8000
+      TRAP_HOST: backend
+      TRAP_PORT: 1162
+      TRAP_COMMUNITY: public
+      FLAPPING_ROUTER_COUNT: 5
+      DOWN_ROUTER_COUNT: 3
+      FLAPPING_BUNDLE_COUNT: 3
+      TICK_MIN_SECONDS: 3
+      TICK_MAX_SECONDS: 8
+      BGP_INCIDENT_INTERVAL_SECONDS: 600
+      BUNDLE_FAILURE_INTERVAL_SECONDS: 900
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - certbot-conf:/etc/letsencrypt:ro
+      - certbot-www:/var/www/certbot
+    depends_on:
+      - backend
+
+  # Requests and renews the Let's Encrypt certificate used by `frontend`.
+  # Run `scripts/init-letsencrypt.sh` once to obtain the first certificate
+  # (see "HTTPS / Let's Encrypt" in the README) — this service then just
+  # keeps it renewed for as long as the stack stays up.
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - certbot-conf:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    entrypoint: >
+      /bin/sh -c "trap exit TERM;
+      while :; do
+        certbot renew --webroot -w /var/www/certbot --quiet;
+        sleep 12h & wait $${!};
+      done"
+
+  # --- Optional: MySQL instead of the default Postgres+PostGIS ---
+  # 1. Uncomment this service.
+  # 2. Set DATABASE_URL=mysql+pymysql://ncr:ncr@mysql:3306/ncr in a .env file (see .env.example).
+  # 3. Add `depends_on: [mysql]` under the `backend` service above.
+  #
+  # mysql:
+  #   image: mysql:8.4
+  #   environment:
+  #     MYSQL_USER: ncr
+  #     MYSQL_PASSWORD: ncr
+  #     MYSQL_ROOT_PASSWORD: root
+  #     MYSQL_DATABASE: ncr
+  #   volumes:
+  #     - mysql-data:/var/lib/mysql
+  #   ports:
+  #     - "3306:3306"
+
+volumes:
+  backend-data:
+  certbot-conf:
+  certbot-www:
+  postgres-data:
+  # mysql-data:

@@ -1,0 +1,551 @@
+:root {
+  color-scheme: light dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #0f1420;
+  color: #e6e9f0;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+header.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.75rem 1.25rem;
+  background: #161c2c;
+  border-bottom: 1px solid #262f45;
+}
+
+header.topbar h1 {
+  font-size: 1.05rem;
+  margin: 0;
+  white-space: nowrap;
+}
+
+nav.tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+nav.tabs button {
+  background: transparent;
+  border: none;
+  color: #9aa4bf;
+  padding: 0.5rem 0.9rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+nav.tabs button.active {
+  background: #262f45;
+  color: #fff;
+}
+
+.stats-strip {
+  margin-left: auto;
+  display: flex;
+  gap: 1.25rem;
+  font-size: 0.85rem;
+  color: #9aa4bf;
+}
+
+.stats-strip strong {
+  color: #fff;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+}
+
+.logout-button {
+  margin-left: 1rem;
+  flex-shrink: 0;
+}
+
+.current-user {
+  flex-shrink: 0;
+  margin-left: 1rem;
+  color: #9aa4bf;
+  font-size: 0.85rem;
+}
+
+.icon-button {
+  flex-shrink: 0;
+  margin-left: 1rem;
+  padding: 0.4rem 0.65rem;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 9, 16, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Leaflet's own panes/controls use z-index up to 800 (.leaflet-control),
+     and neither <main> nor .leaflet-container establishes its own stacking
+     context, so those values compare directly against this overlay's -
+     it must clear Leaflet's range or map controls intercept modal clicks. */
+  z-index: 2000;
+}
+
+.modal-card {
+  width: min(380px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  background: #161c2c;
+  border: 1px solid #262f45;
+  border-radius: 14px;
+  padding: 1.5rem 1.75rem;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.modal-close {
+  background: transparent;
+  border: none;
+  color: #9aa4bf;
+  font-size: 1.4rem;
+  line-height: 1;
+  padding: 0 0.25rem;
+}
+
+.modal-close:hover {
+  background: transparent;
+  color: #fff;
+}
+
+.settings-card {
+  width: min(460px, 92vw);
+}
+
+.settings-card h3 {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 0.85rem;
+  color: #9aa4bf;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.settings-card h3:first-of-type {
+  margin-top: 0;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid #262f45;
+  margin-bottom: 0.25rem;
+}
+
+.settings-tabs button {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: #9aa4bf;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  border-bottom: 2px solid transparent;
+}
+
+.settings-tabs button.active {
+  color: #fff;
+  border-bottom-color: #3b82f6;
+}
+
+.users-table {
+  font-size: 0.8rem;
+}
+
+.users-table th,
+.users-table td {
+  padding: 0.4rem 0.4rem;
+}
+
+.users-table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
+.users-table-actions button {
+  padding: 0.3rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.you-tag {
+  color: #9aa4bf;
+  font-size: 0.75rem;
+}
+
+.settings-hint {
+  color: #9aa4bf;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.otp-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.otp-setup label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: #9aa4bf;
+}
+
+.otp-qr {
+  align-self: center;
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+}
+
+.otp-secret {
+  align-self: center;
+  background: #0f1420;
+  border: 1px solid #262f45;
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.05em;
+}
+
+.otp-setup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+main {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+.page {
+  padding: 1.25rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+/* Lets a wide data table scroll horizontally within its own box instead of
+   either squashing illegibly or blowing out the whole page's layout. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-scroll table {
+  width: max-content;
+  min-width: 100%;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #262f45;
+}
+
+th {
+  color: #9aa4bf;
+  font-weight: 600;
+}
+
+tr:hover td {
+  background: #161c2c;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.badge.up { background: #1b3d2b; color: #4ade80; }
+.badge.down { background: #3d1b1b; color: #f87171; }
+.badge.flapping { background: #3d341b; color: #facc15; }
+.badge.unknown { background: #26314d; color: #9aa4bf; }
+
+.badge.open { background: #3d1b1b; color: #f87171; }
+.badge.resolved { background: #1b3d2b; color: #4ade80; }
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.card {
+  background: #161c2c;
+  border: 1px solid #262f45;
+  border-radius: 10px;
+  padding: 1rem 1.1rem;
+}
+
+.card .value {
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+
+.card .label {
+  color: #9aa4bf;
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  background: #0f1420;
+}
+
+.type-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.type-bar-row .label {
+  width: 150px;
+  color: #9aa4bf;
+  flex-shrink: 0;
+}
+
+.type-bar-track {
+  flex: 1;
+  background: #1c2438;
+  border-radius: 4px;
+  height: 10px;
+  overflow: hidden;
+}
+
+.type-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #60a5fa, #818cf8);
+}
+
+.type-bar-row .count {
+  width: 2.5rem;
+  text-align: right;
+}
+
+.link {
+  color: #60a5fa;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+input, select, textarea, button {
+  background: #161c2c;
+  color: #e6e9f0;
+  border: 1px solid #262f45;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+button:not(:disabled):hover {
+  background: #262f45;
+}
+
+.login-page {
+  position: relative;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background: #0f1420;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.login-card {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  width: min(320px, 90vw);
+  padding: 2rem 2rem 1.75rem;
+  background: rgba(22, 28, 44, 0.75);
+  border: 1px solid #262f45;
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.login-card h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  text-align: center;
+}
+
+.login-subtitle {
+  margin: -0.5rem 0 0.25rem;
+  text-align: center;
+  color: #9aa4bf;
+  font-size: 0.82rem;
+}
+
+.login-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: #9aa4bf;
+}
+
+.login-card input {
+  width: 100%;
+}
+
+.login-error {
+  color: #f87171;
+  background: #3d1b1b;
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.login-submit {
+  margin-top: 0.25rem;
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+  font-weight: 600;
+  padding: 0.55rem 0.6rem;
+}
+
+.login-submit:hover {
+  background: #60a5fa;
+}
+
+@media (max-width: 768px) {
+  header.topbar {
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    padding: 0.6rem 0.85rem;
+  }
+
+  header.topbar h1 {
+    font-size: 0.95rem;
+  }
+
+  /* Tabs and the stats strip each take their own full-width row below the
+     title (still in source order - just after it fits), and scroll
+     horizontally instead of wrapping button-by-button. */
+  nav.tabs {
+    flex: 1 1 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  nav.tabs button {
+    flex-shrink: 0;
+    white-space: nowrap;
+    padding: 0.45rem 0.7rem;
+    font-size: 0.82rem;
+  }
+
+  .stats-strip {
+    flex: 1 1 100%;
+    margin-left: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .stats-strip span {
+    flex-shrink: 0;
+  }
+
+  /* A single flex item on its own wrapped line, so it can right-align its
+     own children with justify-content - putting margin-left:auto directly
+     on .current-user here instead would push it (and only it) flush to the
+     line's end and force its siblings (icon-button, logout-button) off the
+     edge of the viewport entirely, past where the wrapped line can show
+     them. */
+  .topbar-actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .page {
+    padding: 0.85rem;
+  }
+
+  .type-bar-row .label {
+    width: 90px;
+    font-size: 0.72rem;
+  }
+
+  /* Prevents iOS Safari from auto-zooming the page when a text input is
+     focused, which it does for any font-size under 16px. */
+  input, select, textarea {
+    font-size: 16px;
+  }
+}

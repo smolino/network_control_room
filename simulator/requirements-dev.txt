@@ -1,0 +1,5 @@
+# Only needed to run the generate_*.py scripts (regenerating the seed
+# JSON files). NOT part of the runtime image - trap_simulator.py only
+# ever reads the already-generated static JSON, see requirements.txt.
+global-land-mask==1.0.0
+numpy
