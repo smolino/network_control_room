@@ -3,7 +3,7 @@ import { fetchIncidentAnalysis, fetchIncidentNotifications, notifyIncidentTeam }
 
 const KIND_LABEL = { maintenance: "Maintenance", soc: "SOC" };
 
-function IncidentReviewRow({ incident, router, teams, onSelectRouter }) {
+function IncidentReviewRow({ incident, router, teams, onSelectRouter, symptomaticCount }) {
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [analysis, setAnalysis] = useState(null);
@@ -53,6 +53,9 @@ function IncidentReviewRow({ incident, router, teams, onSelectRouter }) {
     <>
       <tr>
         <td>{incident.updated_at ? new Date(incident.updated_at).toLocaleString() : "—"}</td>
+        <td>
+          <span className={`badge ${incident.layer === "L1" ? "down" : "unknown"}`}>{incident.layer}</span>
+        </td>
         <td>{incident.incident_type}</td>
         <td>
           <span className="link" onClick={() => onSelectRouter(incident.router_id)}>
@@ -61,7 +64,15 @@ function IncidentReviewRow({ incident, router, teams, onSelectRouter }) {
         </td>
         <td>{incident.interface_name || "—"}</td>
         <td>{incident.trap_count}</td>
-        <td>{incident.description}</td>
+        <td>
+          {incident.description}
+          {symptomaticCount > 0 && (
+            <div style={{ fontSize: "0.72rem", color: "#9aa4bf", marginTop: "0.2rem" }}>
+              → root cause of {symptomaticCount} symptomatic incident{symptomaticCount === 1 ? "" : "s"} (suppressed
+              from the Incident List by default)
+            </div>
+          )}
+        </td>
         <td>
           <span className="link" onClick={toggle}>
             {expanded ? "Hide" : "Describe issue & suggest solution"}
@@ -70,7 +81,7 @@ function IncidentReviewRow({ incident, router, teams, onSelectRouter }) {
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={7}>
+          <td colSpan={8}>
             <div
               style={{
                 padding: "0.75rem 1rem",
@@ -164,6 +175,7 @@ export default function HumanReview({ incidents, routers, teams, onSelectRouter 
           <thead>
             <tr>
               <th>Updated</th>
+              <th>Layer</th>
               <th>Type</th>
               <th>Router</th>
               <th>Interface</th>
@@ -180,11 +192,12 @@ export default function HumanReview({ incidents, routers, teams, onSelectRouter 
                 router={routerById[incident.router_id]}
                 teams={teams}
                 onSelectRouter={onSelectRouter}
+                symptomaticCount={incidents.filter((i) => i.root_cause_incident_id === incident.id).length}
               />
             ))}
             {needsReview.length === 0 && (
               <tr>
-                <td colSpan={7}>Nothing needs human review right now.</td>
+                <td colSpan={8}>Nothing needs human review right now.</td>
               </tr>
             )}
           </tbody>

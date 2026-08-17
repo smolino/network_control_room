@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.bgp_topology import build_established_adjacency, shortest_reroute_path
 from app.bundles import update_member_and_bundle
+from app.correlation import try_link_root_cause
 from app.models import BgpPeering, BgpSessionStatus, BundleStatus, Incident, IncidentStatus, IncidentType, Router, RouterStatus, TrapEvent
 from app.remediation.engine import NOTIFY_ONLY_REASONS, maybe_remediate, needs_attention_router_ids
 from app.snmp.flapping import evaluate_isis_adjacency_event, evaluate_link_event, open_incident
@@ -176,6 +177,13 @@ def classify_and_store(db: Session, source_ip: str, trap_oid: str, varbinds: lis
 
     trap_event.incident_id = incident.id
 
+    # Topology-based root-cause correlation: only relevant the first time an
+    # incident opens (a repeat trap just bumping trap_count is already
+    # linked or already independent), and only for L3 incidents - see
+    # app.correlation.
+    if created:
+        try_link_root_cause(db, incident, now)
+
     db.commit()
     db.refresh(trap_event)
     db.refresh(incident)
@@ -185,8 +193,10 @@ def classify_and_store(db: Session, source_ip: str, trap_oid: str, varbinds: lis
 
     # Auto-heal pipeline: only on the first occurrence of a given open
     # incident, never on repeat traps that just bump an existing incident's
-    # trap_count (otherwise every re-trigger would take a fresh backup).
-    remediation = maybe_remediate(db, router, incident) if created else None
+    # trap_count (otherwise every re-trigger would take a fresh backup), and
+    # never for an incident that's just a symptom of an already-open L1
+    # root cause - bouncing a downstream interface wouldn't fix a fiber cut.
+    remediation = maybe_remediate(db, router, incident) if created and incident.root_cause_incident_id is None else None
 
     # Computed fresh after remediation/incident state settles, so a router
     # whose incident just got resolved (e.g. by this same linkUp) correctly
@@ -200,6 +210,9 @@ def classify_and_store(db: Session, source_ip: str, trap_oid: str, varbinds: lis
         "status": incident.status.value,
         "trap_count": incident.trap_count,
         "description": incident.description,
+        "layer": incident.layer.value,
+        "peering_id": incident.peering_id,
+        "root_cause_incident_id": incident.root_cause_incident_id,
     }
     if remediation:
         incident_payload["remediation"] = remediation

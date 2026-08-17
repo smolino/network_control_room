@@ -58,6 +58,7 @@ export default function RouterDetail({ router, routers = [], peerings = [], onCl
           bundle: p.router_a_id === router.id ? p.bundle_a : p.bundle_b,
           distanceKm: p.distance_km,
           repeaterCount: p.repeater_count,
+          openL1IncidentId: p.open_l1_incident_id,
         }))
         .filter((p) => p.peer)
     : [];
@@ -133,7 +134,7 @@ export default function RouterDetail({ router, routers = [], peerings = [], onCl
           <div className="table-scroll" style={{ marginBottom: "1.25rem" }}>
             <table>
               <tbody>
-                {bgpPeers.map(({ peer, status, bundle, distanceKm, repeaterCount }) => (
+                {bgpPeers.map(({ peer, status, bundle, distanceKm, repeaterCount, openL1IncidentId }) => (
                   <tr key={peer.id}>
                     <td>
                       <span className="link" onClick={() => onSelectRouter(peer.id)}>{peer.hostname}</span>
@@ -149,6 +150,15 @@ export default function RouterDetail({ router, routers = [], peerings = [], onCl
                       {distanceKm != null
                         ? `${distanceKm.toFixed(0)}km SMF · ${repeaterCount} repeater${repeaterCount === 1 ? "" : "s"}`
                         : "—"}
+                    </td>
+                    <td>
+                      {openL1IncidentId != null ? (
+                        <span className="badge down" title={`L1 incident #${openL1IncidentId}`}>
+                          ⚠ fiber fault (L1)
+                        </span>
+                      ) : (
+                        "—"
+                      )}
                     </td>
                   </tr>
                 ))}

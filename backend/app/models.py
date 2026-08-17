@@ -57,6 +57,27 @@ class IncidentStatus(str, enum.Enum):
     RESOLVED = "resolved"
 
 
+class AlarmLayer(str, enum.Enum):
+    L1 = "L1"  # physical/optical (fiber, amplifiers, transceivers)
+    L3 = "L3"  # control-plane/logical (BGP, IS-IS, interfaces)
+
+
+# Which layer each incident type belongs to for topology-based root-cause
+# correlation (see app.correlation) - anything not listed here defaults to
+# L3, since most of this codebase's incident types are control-plane/
+# interface events. Only the genuinely physical-layer alarm types are L1.
+INCIDENT_LAYER: dict[IncidentType, AlarmLayer] = {
+    IncidentType.OPTICAL_ALARM: AlarmLayer.L1,
+    IncidentType.FAN_FAILURE: AlarmLayer.L1,
+    IncidentType.PSU_FAILURE: AlarmLayer.L1,
+}
+
+
+def _default_incident_layer(context) -> AlarmLayer:
+    incident_type = context.get_current_parameters()["incident_type"]
+    return INCIDENT_LAYER.get(incident_type, AlarmLayer.L3)
+
+
 class RemediationActionType(str, enum.Enum):
     INTERFACE_BOUNCE = "INTERFACE_BOUNCE"
     CLEAR_COUNTERS = "CLEAR_COUNTERS"
@@ -170,10 +191,27 @@ class Incident(Base):
     # classifier itself (e.g. a linkUp trap, or auto-heal marking a
     # transient event as handled).
     resolved_manually = Column(Boolean, default=False, nullable=False)
+    # Common-Alarm-Model-style layer, derived automatically from
+    # incident_type (see INCIDENT_LAYER above) - used by app.correlation to
+    # rank an L1 (physical) alarm above any L3 (control-plane) symptom on
+    # the same link.
+    layer = Column(Enum(AlarmLayer), nullable=False, default=_default_incident_layer, index=True)
+    # Set only for L1 incidents that stem from a specific fiber link (see
+    # app.fiber_faults) - lets root-cause lookup walk "this peering has an
+    # open physical fault" without guessing which endpoint router owns it.
+    peering_id = Column(Integer, ForeignKey("bgp_peerings.id"), nullable=True, index=True)
+    # Set by app.correlation.try_link_root_cause when this (L3) incident
+    # opened while an L1 incident was already open on a peering it belongs
+    # to - marks it as a symptom rather than an independent problem, so it's
+    # excluded from auto-heal and can be suppressed from the top-level view.
+    root_cause_incident_id = Column(Integer, ForeignKey("incidents.id"), nullable=True, index=True)
 
     router = relationship("Router", back_populates="incidents")
     trap_events = relationship("TrapEvent", back_populates="incident")
     remediation_actions = relationship("RemediationAction", back_populates="incident", cascade="all, delete-orphan")
+    peering = relationship("BgpPeering")
+    root_cause = relationship("Incident", remote_side=[id], back_populates="symptomatic_incidents")
+    symptomatic_incidents = relationship("Incident", back_populates="root_cause")
 
 
 class RouterConfigBackup(Base):

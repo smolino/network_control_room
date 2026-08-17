@@ -5,7 +5,7 @@ from app.bgp_topology import build_established_adjacency, shortest_reroute_path
 from app.bundles import ensure_bundles_for_peering
 from app.db import get_db
 from app.fiber_faults import active_faults
-from app.models import BgpPeering, BgpSessionStatus, InterfaceBundle, Router
+from app.models import AlarmLayer, BgpPeering, BgpSessionStatus, Incident, IncidentStatus, InterfaceBundle, Router
 from app.schemas import BgpPeerIn, BgpPeeringOut, InterfaceBundleOut, InterfaceOut
 
 router = APIRouter(prefix="/api/bgp", tags=["bgp"])
@@ -32,6 +32,12 @@ def _to_peering_out(db: Session, peering: BgpPeering, adjacency: dict[int, list[
     out = BgpPeeringOut.model_validate(peering)
     out.reroute_path = reroute_path
     out.active_fault_segment = active_faults.get(peering.id)
+    open_l1_incident = (
+        db.query(Incident.id)
+        .filter(Incident.peering_id == peering.id, Incident.layer == AlarmLayer.L1, Incident.status == IncidentStatus.OPEN)
+        .first()
+    )
+    out.open_l1_incident_id = open_l1_incident[0] if open_l1_incident else None
 
     bundle_a = db.query(InterfaceBundle).filter(
         InterfaceBundle.peering_id == peering.id, InterfaceBundle.router_id == peering.router_a_id

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import (
+    AlarmLayer,
     Incident,
     IncidentNotification,
     IncidentStatus,
@@ -61,6 +62,12 @@ def list_incidents(
     incident_type: IncidentType | None = None,
     router_id: int | None = None,
     router_type: RouterType | None = None,
+    layer: AlarmLayer | None = None,
+    # Excludes incidents already linked as a symptom of an open L1 incident
+    # (see app.correlation) - the "suppress symptomatic from the top-level
+    # view, keep it visible on drill-down" behavior the Incident List's
+    # "Hide symptomatic" filter uses.
+    root_cause_only: bool = False,
     limit: int = 200,
     db: Session = Depends(get_db),
 ):
@@ -73,6 +80,10 @@ def list_incidents(
         query = query.filter(Incident.router_id == router_id)
     if router_type is not None:
         query = query.join(Router, Incident.router_id == Router.id).filter(Router.router_type == router_type)
+    if layer is not None:
+        query = query.filter(Incident.layer == layer)
+    if root_cause_only:
+        query = query.filter(Incident.root_cause_incident_id.is_(None))
     incidents = query.order_by(Incident.updated_at.desc()).limit(limit).all()
 
     latest_by_incident = _latest_remediation_by_incident(db, [i.id for i in incidents])
@@ -86,6 +97,28 @@ def get_incident(incident_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Incident not found")
     latest_by_incident = _latest_remediation_by_incident(db, [obj.id])
     return _to_incident_out(obj, latest_by_incident)
+
+
+@router.get("/{incident_id}/tree")
+def get_incident_tree(incident_id: int, db: Session = Depends(get_db)):
+    """Root cause + everything correlated to it (see app.correlation) - the
+    drill-down panel's incident tree. Walks up to the true root first if
+    the given incident is itself a symptom, then returns every incident
+    (across any router) currently linked to that root."""
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if incident is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    root = incident
+    if root.root_cause_incident_id is not None:
+        root = db.query(Incident).filter(Incident.id == root.root_cause_incident_id).first() or incident
+
+    symptomatic = db.query(Incident).filter(Incident.root_cause_incident_id == root.id).order_by(Incident.opened_at.asc()).all()
+    latest_by_incident = _latest_remediation_by_incident(db, [root.id] + [i.id for i in symptomatic])
+    return {
+        "root_cause": _to_incident_out(root, latest_by_incident),
+        "symptomatic": [_to_incident_out(i, latest_by_incident) for i in symptomatic],
+    }
 
 
 @router.get("/{incident_id}/remediation", response_model=list[RemediationActionOut])
@@ -160,6 +193,9 @@ def _incident_ws_payload(incident: Incident) -> dict:
         "description": incident.description,
         "closed_at": incident.closed_at.isoformat() if incident.closed_at else None,
         "resolved_manually": incident.resolved_manually,
+        "layer": incident.layer.value,
+        "peering_id": incident.peering_id,
+        "root_cause_incident_id": incident.root_cause_incident_id,
     }
 
 
