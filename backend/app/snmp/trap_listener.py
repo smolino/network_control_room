@@ -4,6 +4,12 @@ Decodes SNMPv1/v2c trap PDUs at the BER level with pysnmp's protocol
 modules directly, instead of using pysnmp's own dispatcher/engine, so it
 can share FastAPI's asyncio event loop via a plain
 `loop.create_datagram_endpoint` UDP server.
+
+Pure mediation: this is the "collection" box in the design doc's
+architecture - it decodes the wire format and publishes a raw alarm to
+Kafka (see app.streaming.producer), nothing else. Classification,
+enrichment, persistence, and correlation all happen downstream in
+app.streaming.normalizer/correlator.
 """
 
 import asyncio
@@ -14,9 +20,7 @@ from pyasn1.codec.ber import decoder
 from pysnmp.proto import api
 
 from app.config import settings
-from app.db import SessionLocal
-from app.snmp.classifier import classify_and_store
-from app.ws import manager
+from app.streaming.producer import publish_raw_alarm
 
 logger = logging.getLogger(__name__)
 
@@ -56,33 +60,22 @@ def _extract_trap_oid(proto_mod, req_pdu, msg_ver, varbinds: list[tuple[str, str
     return varbinds[0][0] if varbinds else "unknown"
 
 
-def _classify_and_store_sync(source_ip: str, trap_oid: str, varbinds: list[tuple[str, str]]):
-    db = SessionLocal()
+def _publish_sync(source_ip: str, trap_oid: str, varbinds: list[tuple[str, str]]) -> None:
     try:
-        return classify_and_store(db, source_ip, trap_oid, varbinds)
+        publish_raw_alarm(source_ip, trap_oid, varbinds)
     except Exception:
-        db.rollback()
-        logger.exception("Failed to process trap from %s (oid=%s)", source_ip, trap_oid)
-        return None
-    finally:
-        db.close()
+        logger.exception("Failed to publish trap from %s (oid=%s)", source_ip, trap_oid)
 
 
 async def _process_trap(source_ip: str, trap_oid: str, varbinds: list[tuple[str, str]]) -> None:
-    # Off the event loop and onto a worker thread: classify_and_store does
-    # several blocking DB round-trips, and a burst of traps (e.g. thousands
-    # of routers cold-booting at once) can arrive far faster than those
-    # round-trips complete. Running them one at a time on the event loop
-    # would serialize all trap handling behind DB latency, which lets
-    # incoming UDP datagrams pile up in the kernel's socket buffer until it
-    # overflows and starts silently dropping them. Safe to run concurrently
-    # across routers because classify_and_store now takes a row lock on the
-    # router (and on any shared BgpPeering) it touches, so two traps for
-    # the *same* router still serialize correctly at the DB level.
-    result = await asyncio.to_thread(_classify_and_store_sync, source_ip, trap_oid, varbinds)
-
-    if result:
-        await manager.broadcast(result)
+    # Off the event loop: the producer is pre-warmed at startup (see
+    # main.py's lifespan) so this is normally just a non-blocking buffered
+    # send, but run it via to_thread anyway in case a burst of traps (e.g.
+    # thousands of routers cold-booting at once) arrives before that
+    # warm-up finishes and the producer falls back to its blocking retry
+    # loop - that must never stall the event loop that's also decoding
+    # incoming UDP datagrams.
+    await asyncio.to_thread(_publish_sync, source_ip, trap_oid, varbinds)
 
 
 async def _handle_datagram(data: bytes, addr: tuple[str, int]) -> None:

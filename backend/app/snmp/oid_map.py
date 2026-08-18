@@ -47,6 +47,16 @@ ROUTER_ID_OID = "1.3.6.1.4.1.9.9.9999.1.1"
 IF_NAME_OID = "1.3.6.1.4.1.9.9.9999.1.2"
 BGP_PEER_OID = "1.3.6.1.4.1.9.9.9999.1.3"  # mgmt IP of the BGP neighbor this trap is about
 
+# Synthetic OIDs used only by app.fiber_faults to drive its "fiber cut on
+# one interior span" scenario through the same mediation->Kafka->normalizer
+# ->correlator pipeline as every other trap, rather than writing incidents
+# directly - see app/streaming/. FIBER_CUT_CLEAR_OID's resolve behavior is
+# special-cased in app.snmp.classifier the same way LINK_UP_OID/
+# ISIS_ADJACENCY_UP_OID already are; its TRAP_OID_MAP entry below only
+# supplies the label/severity for the TrapEvent audit row.
+FIBER_CUT_OID = "1.3.6.1.4.1.9.9.9999.4.1"
+FIBER_CUT_CLEAR_OID = "1.3.6.1.4.1.9.9.9999.4.2"
+
 TRAP_OID_MAP: dict[str, tuple[str, IncidentType, str]] = {
     LINK_DOWN_OID: ("linkDown", IncidentType.LINK_DOWN, "critical"),
     LINK_UP_OID: ("linkUp", IncidentType.LINK_UP, "info"),
@@ -65,6 +75,8 @@ TRAP_OID_MAP: dict[str, tuple[str, IncidentType, str]] = {
     CISCO_CONFIG_MAN_OID: ("ciscoConfigManEvent", IncidentType.CONFIG_CHANGE, "info"),
     CISCO_MEMORY_LOW_OID: ("ciscoMemoryPoolLowMemory", IncidentType.HIGH_MEMORY, "warning"),
     CISCO_OPTICAL_RX_POWER_OID: ("entSensorThresholdNotification", IncidentType.OPTICAL_ALARM, "warning"),
+    FIBER_CUT_OID: ("opticalLossOfSignal", IncidentType.OPTICAL_ALARM, "critical"),
+    FIBER_CUT_CLEAR_OID: ("opticalSignalRestored", IncidentType.OPTICAL_ALARM, "info"),
 }
 
 UNKNOWN_TRAP = ("unknownTrap", IncidentType.UNKNOWN, "info")

@@ -8,20 +8,30 @@ from app.models import Incident, IncidentStatus, IncidentType, Router, RouterSta
 from app.snmp.oid_map import ISIS_ADJACENCY_DOWN_OID, LINK_DOWN_OID, LINK_UP_OID
 
 
-def open_incident(db: Session, router: Router, incident_type: IncidentType, interface_name: str | None, description: str) -> tuple[Incident, bool]:
+def open_incident(
+    db: Session,
+    router: Router,
+    incident_type: IncidentType,
+    interface_name: str | None,
+    description: str,
+    peering_id: int | None = None,
+) -> tuple[Incident, bool]:
     """Returns (incident, created) - `created` is False when an already-open
     incident of this type/interface was found and just had its trap_count
-    bumped, so callers can trigger auto-heal only on the first occurrence."""
-    incident = (
-        db.query(Incident)
-        .filter(
-            Incident.router_id == router.id,
-            Incident.incident_type == incident_type,
-            Incident.interface_name == interface_name,
-            Incident.status == IncidentStatus.OPEN,
-        )
-        .first()
+    bumped, so callers can trigger auto-heal only on the first occurrence.
+    When `peering_id` is set (only for the peering-scoped OPTICAL_ALARM
+    incidents app.fiber_faults raises), it's added to the dedup key too -
+    otherwise two peerings that happen to share the same router_a could
+    collide and bump each other's incident instead of getting their own."""
+    query = db.query(Incident).filter(
+        Incident.router_id == router.id,
+        Incident.incident_type == incident_type,
+        Incident.interface_name == interface_name,
+        Incident.status == IncidentStatus.OPEN,
     )
+    if peering_id is not None:
+        query = query.filter(Incident.peering_id == peering_id)
+    incident = query.first()
     if incident:
         incident.trap_count += 1
         return incident, False
@@ -30,6 +40,7 @@ def open_incident(db: Session, router: Router, incident_type: IncidentType, inte
         router_id=router.id,
         incident_type=incident_type,
         interface_name=interface_name,
+        peering_id=peering_id,
         status=IncidentStatus.OPEN,
         trap_count=1,
         description=description,
@@ -37,6 +48,29 @@ def open_incident(db: Session, router: Router, incident_type: IncidentType, inte
     db.add(incident)
     db.flush()
     return incident, True
+
+
+def resolve_incident_for_peering(db: Session, peering_id: int, incident_type: IncidentType, now: datetime) -> Incident | None:
+    """Resolves the open incident of `incident_type` scoped to `peering_id`
+    rather than router_id+interface_name - used to close the L1
+    OPTICAL_ALARM incident app.fiber_faults opened for a peering once its
+    FIBER_CUT_CLEAR_OID arrives, mirroring _resolve_open_incidents' router-
+    scoped pattern below."""
+    incident = (
+        db.query(Incident)
+        .filter(
+            Incident.peering_id == peering_id,
+            Incident.incident_type == incident_type,
+            Incident.status == IncidentStatus.OPEN,
+        )
+        .first()
+    )
+    if incident is None:
+        return None
+    incident.status = IncidentStatus.RESOLVED
+    incident.closed_at = now
+    db.flush()
+    return incident
 
 
 def _resolve_open_incidents(

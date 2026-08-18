@@ -7,6 +7,7 @@ from app.db import get_db
 from app.fiber_faults import active_faults
 from app.models import AlarmLayer, BgpPeering, BgpSessionStatus, Incident, IncidentStatus, InterfaceBundle, Router
 from app.schemas import BgpPeerIn, BgpPeeringOut, InterfaceBundleOut, InterfaceOut
+from app.topology_graph import sync_peering_to_neo4j
 
 router = APIRouter(prefix="/api/bgp", tags=["bgp"])
 
@@ -70,6 +71,7 @@ def seed_peerings(pairs: list[BgpPeerIn], db: Session = Depends(get_db)):
         peer_adjacency.setdefault(pair.router_b_mgmt_ip, []).append(pair.router_a_mgmt_ip)
 
     result = []
+    seeded_bundles = []
     for pair in pairs:
         router_a = db.query(Router).filter(Router.mgmt_ip == pair.router_a_mgmt_ip).first()
         router_b = db.query(Router).filter(Router.mgmt_ip == pair.router_b_mgmt_ip).first()
@@ -91,12 +93,21 @@ def seed_peerings(pairs: list[BgpPeerIn], db: Session = Depends(get_db)):
 
         a_index = sorted(peer_adjacency[router_a.mgmt_ip]).index(router_b.mgmt_ip)
         b_index = sorted(peer_adjacency[router_b.mgmt_ip]).index(router_a.mgmt_ip)
-        ensure_bundles_for_peering(db, peering.id, router_a, a_index)
-        ensure_bundles_for_peering(db, peering.id, router_b, b_index)
+        bundle_a = ensure_bundles_for_peering(db, peering.id, router_a, a_index)
+        bundle_b = ensure_bundles_for_peering(db, peering.id, router_b, b_index)
 
         result.append(peering)
+        seeded_bundles.append((peering, bundle_a, bundle_b))
 
     db.commit()
     for obj in result:
         db.refresh(obj)
+
+    # Mirror the same topology into the Neo4j graph app.correlation
+    # traverses for root-cause lookups - see app/topology_graph.py. Runs
+    # after the Postgres commit so the graph never gets ahead of the
+    # alarm store's own view of what peerings/bundles exist.
+    for peering, bundle_a, bundle_b in seeded_bundles:
+        sync_peering_to_neo4j(peering, bundle_a, bundle_b)
+
     return result

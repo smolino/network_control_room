@@ -27,5 +27,18 @@ class Settings:
     smtp_use_tls: bool = os.getenv("SMTP_USE_TLS", "true").lower() not in ("false", "0", "")
     smtp_from: str = os.getenv("SMTP_FROM", "noc@network-control-room.local")
 
+    # Alarm pipeline: mediation (trap_listener/fiber_faults) publishes raw
+    # alarms here; app.streaming.normalizer/correlator consume/produce the
+    # rest of the chain - see app/streaming/ and the "Alarm pipeline"
+    # section of the README.
+    kafka_bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+
+    # Static topology graph (Router/Interface/FiberSpan + SUPPORTED_BY) used
+    # by app.correlation for root-cause traversal - written by
+    # api/bgp.py:seed_peerings, read by app.topology_graph.
+    neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
+    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "ncrpassword")
+
 
 settings = Settings()
