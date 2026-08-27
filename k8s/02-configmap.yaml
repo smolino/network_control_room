@@ -1,0 +1,27 @@
+# Non-secret config shared across services, mirroring the plain-value env
+# vars in docker-compose.yml (see "Configuration reference" in the README).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ncr-config
+  namespace: ncr
+data:
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  NEO4J_URI: bolt://neo4j:7687
+  TRAP_HOST: "0.0.0.0"
+  TRAP_PORT: "1162"
+  TRAP_COMMUNITY: public
+  FLAP_WINDOW_SECONDS: "600"
+  FLAP_TRANSITION_THRESHOLD: "4"
+  CORS_ORIGINS: "*"
+  # simulator
+  BACKEND_API_URL: http://backend:8000
+  FLAPPING_ROUTER_COUNT: "5"
+  DOWN_ROUTER_COUNT: "3"
+  FLAPPING_BUNDLE_COUNT: "3"
+  TICK_MIN_SECONDS: "3"
+  TICK_MAX_SECONDS: "8"
+  CUSTOMER_TICK_MIN_SECONDS: "20"
+  CUSTOMER_TICK_MAX_SECONDS: "45"
+  BGP_INCIDENT_INTERVAL_SECONDS: "600"
+  BUNDLE_FAILURE_INTERVAL_SECONDS: "900"

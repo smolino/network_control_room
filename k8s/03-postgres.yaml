@@ -1,0 +1,67 @@
+# Default database: Postgres + PostGIS, matching docker-compose.yml.
+# Single replica - PostGIS here backs Router.location / the nearest-router
+# lookup, not a piece anything else fans out across.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: ncr
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgis/postgis:16-3.4
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: ncr-secrets, key: POSTGRES_USER}}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: ncr-secrets, key: POSTGRES_PASSWORD}}
+            - name: POSTGRES_DB
+              valueFrom: {secretKeyRef: {name: ncr-secrets, key: POSTGRES_DB}}
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec: {command: ["pg_isready", "-U", "ncr", "-d", "ncr"]}
+            periodSeconds: 5
+            failureThreshold: 20
+          livenessProbe:
+            exec: {command: ["pg_isready", "-U", "ncr", "-d", "ncr"]}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 1Gi}
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # No storageClassName set - uses the cluster's default StorageClass.
+        # Set one explicitly (e.g. hcloud-volumes) if your cluster has none.
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: ncr
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
