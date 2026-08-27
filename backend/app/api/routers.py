@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.bundles import isis_net
@@ -128,7 +129,15 @@ def seed_routers(routers_in: list[RouterIn], db: Session = Depends(get_db)):
 
         obj = Router(**data, parent_router_id=parent_router_id)
         db.add(obj)
-        db.flush()
+        try:
+            with db.begin_nested():
+                db.flush()
+        except IntegrityError:
+            # Lost a race against a concurrent seed request for this same
+            # mgmt_ip (e.g. the simulator retrying after a slow response) -
+            # not a real conflict, just use the row that won.
+            db.expunge(obj)
+            obj = db.query(Router).filter(Router.mgmt_ip == r.mgmt_ip).first()
         created_or_existing.append(obj)
     db.commit()
     for obj in created_or_existing:

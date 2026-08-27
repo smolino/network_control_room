@@ -171,9 +171,16 @@ def build_customer_facing_interfaces(routers: list[dict], customers: list[dict])
 
 
 def _seed_with_retry(url: str, payload: list[dict], what: str) -> None:
+    # 120s, not the old 10s: a bulk seed (up to 4000 routers, or 600 BGP
+    # peerings each writing an interface bundle + a Neo4j sync) can
+    # legitimately take well over 10s on a cold-starting stack, especially
+    # with the dashboard already polling the same backend. A too-tight
+    # client timeout doesn't just log a false "not ready" - it fires a
+    # duplicate concurrent POST at a request that's still running server
+    # side, which is what actually produced the duplicate-key 500s below.
     for attempt in range(1, 31):
         try:
-            resp = requests.post(url, json=payload, timeout=10)
+            resp = requests.post(url, json=payload, timeout=120)
             resp.raise_for_status()
             logger.info("Seeded %d %s into the backend", len(resp.json()), what)
             return
