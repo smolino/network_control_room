@@ -89,11 +89,18 @@ function AutoHealCell({ incident }) {
 export default function IncidentList({ incidents, routers, onSelectRouter }) {
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [layerFilter, setLayerFilter] = useState("all");
+  // Symptomatic incidents (root_cause_incident_id set) are the L3 fallout
+  // of an open L1 fiber fault - hidden by default so the list surfaces the
+  // root cause instead of a wall of correlated noise, per the design doc's
+  // "suppressed from top-level view, visible on drill-down" model.
+  const [hideSymptomatic, setHideSymptomatic] = useState(true);
   const [resolvingIds, setResolvingIds] = useState(() => new Set());
   const [bulkResolving, setBulkResolving] = useState(false);
   const [resettingAll, setResettingAll] = useState(false);
 
   const routerById = useMemo(() => Object.fromEntries(routers.map((r) => [r.id, r])), [routers]);
+  const incidentById = useMemo(() => Object.fromEntries(incidents.map((i) => [i.id, i])), [incidents]);
   const types = useMemo(
     () => Array.from(new Set(incidents.map((i) => i.incident_type))).sort(),
     [incidents]
@@ -101,6 +108,8 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
 
   const filtered = incidents.filter((i) => {
     if (statusFilter !== "all" && i.status !== statusFilter) return false;
+    if (layerFilter !== "all" && i.layer !== layerFilter) return false;
+    if (hideSymptomatic && i.root_cause_incident_id != null) return false;
     if (typeFilter === "all") return true;
     if (typeFilter === NEEDS_REVIEW_FILTER) return i.remediation?.action_type === "NOTIFY_ONLY";
     return i.incident_type === typeFilter;
@@ -168,6 +177,19 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
             <option key={t} value={t}>{t}</option>
           ))}
         </select>
+        <select value={layerFilter} onChange={(e) => setLayerFilter(e.target.value)}>
+          <option value="all">All layers</option>
+          <option value="L1">L1 (physical)</option>
+          <option value="L3">L3 (logical)</option>
+        </select>
+        <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={hideSymptomatic}
+            onChange={(e) => setHideSymptomatic(e.target.checked)}
+          />
+          Hide symptomatic
+        </label>
         <button
           onClick={handleBulkResolve}
           disabled={openShown.length === 0 || bulkResolving}
@@ -205,6 +227,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
           <thead>
             <tr>
               <th>Updated</th>
+              <th>Layer</th>
               <th>Type</th>
               <th>Router</th>
               <th>Interface</th>
@@ -216,43 +239,57 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((i) => (
-              <tr key={i.id}>
-                <td>{i.updated_at ? new Date(i.updated_at).toLocaleString() : "—"}</td>
-                <td>{i.incident_type}</td>
-                <td>
-                  <span className="link" onClick={() => onSelectRouter(i.router_id)}>
-                    {routerById[i.router_id]?.hostname || `#${i.router_id}`}
-                  </span>
-                </td>
-                <td>{i.interface_name || "—"}</td>
-                <td>
-                  <span className={`badge ${i.status}`}>{i.status}</span>
-                  {i.resolved_manually && (
-                    <div style={{ fontSize: "0.7rem", color: "#9aa4bf", marginTop: "0.15rem" }}>
-                      resolved manually
-                    </div>
-                  )}
-                </td>
-                <td>{i.trap_count}</td>
-                <td>{i.description}</td>
-                <td><AutoHealCell incident={i} /></td>
-                <td>
-                  {i.status === "open" && (
-                    <span
-                      className="link"
-                      style={{ opacity: resolvingIds.has(i.id) ? 0.5 : 1 }}
-                      onClick={() => !resolvingIds.has(i.id) && handleResolve(i.id)}
-                    >
-                      {resolvingIds.has(i.id) ? "Resolving…" : "Resolve"}
+            {filtered.map((i) => {
+              const rootCause = i.root_cause_incident_id != null ? incidentById[i.root_cause_incident_id] : null;
+              return (
+                <tr key={i.id}>
+                  <td>{i.updated_at ? new Date(i.updated_at).toLocaleString() : "—"}</td>
+                  <td>
+                    <span className={`badge ${i.layer === "L1" ? "down" : "unknown"}`}>{i.layer}</span>
+                  </td>
+                  <td>{i.incident_type}</td>
+                  <td>
+                    <span className="link" onClick={() => onSelectRouter(i.router_id)}>
+                      {routerById[i.router_id]?.hostname || `#${i.router_id}`}
                     </span>
-                  )}
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td>{i.interface_name || "—"}</td>
+                  <td>
+                    <span className={`badge ${i.status}`}>{i.status}</span>
+                    {i.resolved_manually && (
+                      <div style={{ fontSize: "0.7rem", color: "#9aa4bf", marginTop: "0.15rem" }}>
+                        resolved manually
+                      </div>
+                    )}
+                  </td>
+                  <td>{i.trap_count}</td>
+                  <td>
+                    {i.description}
+                    {i.root_cause_incident_id != null && (
+                      <div style={{ fontSize: "0.72rem", color: "#fb923c", marginTop: "0.2rem" }}>
+                        ↳ symptomatic of #{i.root_cause_incident_id}
+                        {rootCause ? ` (${rootCause.incident_type})` : ""}
+                      </div>
+                    )}
+                  </td>
+                  <td><AutoHealCell incident={i} /></td>
+                  <td>
+                    {i.status === "open" && (
+                      <span
+                        className="link"
+                        style={{ opacity: resolvingIds.has(i.id) ? 0.5 : 1 }}
+                        onClick={() => !resolvingIds.has(i.id) && handleResolve(i.id)}
+                      >
+                        {resolvingIds.has(i.id) ? "Resolving…" : "Resolve"}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={9}>No incidents match this filter.</td>
+                <td colSpan={10}>No incidents match this filter.</td>
               </tr>
             )}
           </tbody>

@@ -13,34 +13,87 @@ also runs an auto-heal playbook — backing up the router's configuration
 first, then attempting (or explicitly declining) a fix — and shows
 exactly what it did.
 
-No LLM is involved — classification and auto-heal are both deterministic,
-rule-based engines (trap OID → incident type; incident type → playbook).
+Alarms are layered **L1 (physical/optical) vs. L3 (control-plane)**, and a
+fiber cut on the physical layer is correlated to the router-side symptoms
+it causes — the downstream interface flaps are suppressed as
+*symptomatic* instead of being treated as independent problems, and never
+get their own auto-heal attempt. That correlation runs through a real
+event pipeline: mediation publishes to **Kafka**, a normalization service
+maps vendor OIDs to a common alarm model, and a correlation service
+traverses a **Neo4j** topology graph (which physical fiber span a router
+interface is actually carried over) to find the root cause before writing
+the final incident state to Postgres. See
+["Alarm pipeline: Kafka + Neo4j"](#alarm-pipeline-kafka--neo4j) and
+["L1/L3 layering and root-cause correlation"](#l1l3-layering-and-root-cause-correlation)
+below.
+
+No LLM is involved anywhere in this pipeline — normalization, correlation,
+and auto-heal are all deterministic, rule-based engines (trap OID →
+incident type; topology graph → root cause; incident type → playbook).
 
 ## Architecture
 
 ```
-┌─────────────┐   SNMP traps (UDP)   ┌─────────────┐
-│  simulator   │ ───────────────────▶│   backend    │
-│ 400 primary  │                      │  FastAPI +   │
-│ + 4000       │   REST (seed)        │  trap        │
-│ customer     │ ───────────────────▶│  listener +  │
-│ routers      │                      │  SQLAlchemy  │
-└─────────────┘                      └──────┬──────┘
-                                              │ REST + WebSocket
-                                       ┌──────▼──────┐
-                                       │  frontend    │
-                                       │ React+Leaflet│
-                                       │  (nginx)     │
-                                       └─────────────┘
+┌─────────────┐  SNMP traps (UDP)  ┌───────────────────────────┐
+│  simulator   │───────────────────▶│  backend (mediation)      │
+│ 400 primary  │                    │  trap listener +          │
+│ + 4000       │  REST (seed)       │  fiber-fault generator    │
+│ customer     │───────────────────▶│  — pure Kafka producers   │
+│ routers      │                    └────────────┬──────────────┘
+└─────────────┘                                  │ produce
+                                                  ▼
+                                     Kafka topic: raw-alarms
+                                                  │ consume
+                                                  ▼
+                                     ┌──────────────────────┐
+                                     │  normalizer            │  OID → Common
+                                     │  (own container)       │  Alarm Model
+                                     └────────────┬────────────┘
+                                                  │ produce
+                                                  ▼
+                                     Kafka topic: norm-alarms
+                                                  │ consume
+                                                  ▼
+                       Neo4j ◀── read ── ┌──────────────────────┐
+                  (topology graph:       │  correlator            │  enrichment +
+                   Router/Interface/     │  (own container)       │  root-cause
+                   FiberSpan,             └────────────┬────────────┘  correlation
+                   SUPPORTED_BY)                       │ write            │ produce
+                                                  ┌─────▼─────┐            ▼
+                                                  │ Postgres   │  Kafka topic:
+                                                  │ alarm store│  incident-events
+                                                  │ (+PostGIS) │            │ consume
+                                                  └─────┬─────┘            ▼
+                                                        │ REST   ┌──────────────────┐
+                                                        │        │ backend (ws relay)│
+                                                        │        └─────────┬─────────┘
+                                                        │                  │ WebSocket
+                                                        ▼                  ▼
+                                                 ┌──────────────────────────┐
+                                                 │  frontend (React+Leaflet, │
+                                                 │  served by nginx)         │
+                                                 └──────────────────────────┘
 ```
 
 - **backend/** — FastAPI app. Runs an asyncio SNMP trap listener on UDP
-  1162 (mapped to the standard trap port 162 on the host), classifies
-  each trap, persists it, runs flap detection, and serves a REST API +
-  a `/ws/events` WebSocket for live updates. Database access goes
-  through SQLAlchemy, so switching from Postgres to SQLite/MySQL is a
-  one-line `DATABASE_URL` change — no code changes, though it drops the
+  1162 (mapped to the standard trap port 162 on the host) and the
+  fiber-fault generator; both are pure Kafka *producers* now — they
+  publish to `raw-alarms` and never touch the database directly (see
+  "Alarm pipeline" below). The same process also runs a background
+  thread that relays the pipeline's final `incident-events` topic onto
+  the `/ws/events` WebSocket, and serves the REST API. Database access
+  goes through SQLAlchemy, so switching from Postgres to SQLite/MySQL is
+  a one-line `DATABASE_URL` change — no code changes, though it drops the
   PostGIS-backed nearest-router lookup (see "Switching the database").
+- **normalizer/** and **correlator/** (`backend/app/streaming/`, run as
+  their own containers off the same backend image) — the rest of the
+  alarm pipeline: OID → Common Alarm Model normalization, then
+  enrichment + Neo4j-backed root-cause correlation + the actual Postgres
+  write. See "Alarm pipeline: Kafka + Neo4j" below.
+- **kafka** / **neo4j** — the message bus between mediation and the two
+  services above, and the static topology graph the correlator traverses
+  for root-cause lookups, respectively. Neither holds mutable alarm
+  state — that's Postgres's job throughout.
 - **simulator/** — generates the 400 primary routers spread across
   real-world cities (`generate_routers.py` / `routers_seed.json`) plus
   4000 customer CPE routers clustered near them
@@ -55,11 +108,11 @@ rule-based engines (trap OID → incident type; incident type → playbook).
 - **frontend/** — React + Vite app with a Leaflet world map on a dark
   basemap (routers colored by status: green=up, red=down,
   yellow=flapping — see [Color reference](#color-reference); primaries
-  as larger dots, customers as small dots near their primary), a
-  dashboard scoped to the backbone's health, and router/incident list
-  views with a primary/customer filter. Updates live over the
-  WebSocket. Served by nginx, which also proxies `/api` and `/ws` to
-  the backend.
+  as larger dots, customers as small dots near their primary), an L1/L3
+  layer toggle, a dashboard scoped to the backbone's health, and
+  router/incident list views with a primary/customer filter. Updates live
+  over the WebSocket. Served by nginx, which also proxies `/api` and
+  `/ws` to the backend.
 
 ## Running it
 
@@ -70,28 +123,45 @@ docker compose up --build
 Then open:
 - **http://localhost** — the web UI (map, dashboard, routers, incidents)
 - **http://localhost:8000/docs** — the backend's interactive API docs
+- **http://localhost:7474** — the Neo4j browser, useful for poking at the
+  topology graph directly (e.g. `MATCH (s:FiberSpan) RETURN count(s)`);
+  login is `neo4j` / the value of `NEO4J_PASSWORD` (`ncrpassword` by
+  default — see "Configuration reference")
 
-It takes a few seconds after startup for the simulator to seed the 4400
+`backend` now waits on `kafka`, `neo4j`, and `postgres` all being healthy
+before it starts, so first boot takes a bit longer than before — Kafka
+and Neo4j both need a few seconds to finish their own internal startup.
+It takes a few seconds after that for the simulator to seed the 4400
 routers (400 primaries + 4000 customers) and start sending traps — the
 map fills in and incidents start appearing shortly after
-`docker compose up` finishes.
+`docker compose up` finishes. If you ever see `backend` (or
+`normalizer`/`correlator`) briefly log Kafka connection retries on a cold
+start, that's expected — they retry with backoff until the broker's ready
+rather than crash-looping.
 
 ## Trap classification
 
-`backend/app/snmp/oid_map.py` maps trap OIDs to incident types:
+`backend/app/snmp/oid_map.py` maps trap OIDs to incident types, and
+`app/models.py:INCIDENT_LAYER` maps incident types to a Common-Alarm-
+Model-style **layer** (`L1` physical/optical vs. `L3` control-plane) —
+everything defaults to `L3` except the genuinely physical-layer types:
 
-| Trap | Incident type |
-|---|---|
-| `linkDown` | `LINK_DOWN` (or `LINK_FLAP` if the interface has flapped ≥4 times in the last 10 minutes) |
-| `linkUp` | `LINK_UP` (resolves any open `LINK_DOWN`/`LINK_FLAP` on that interface) |
-| `coldStart` / `warmStart` | `COLD_START` / `WARM_START` |
-| `authenticationFailure` | `AUTH_FAILURE` |
-| BGP established/backward-transition | `BGP_STATE_CHANGE` |
-| IS-IS adjacency down/up (on a bundle member) | `ISIS_NBR_DOWN` / `ISIS_NBR_UP` |
-| Cisco CPU threshold | `HIGH_CPU` |
-| Cisco environment/temperature | `ENV_ALARM` |
-| Cisco config-change | `CONFIG_CHANGE` |
-| anything else | `UNKNOWN` |
+| Trap | Incident type | Layer |
+|---|---|---|
+| `linkDown` | `LINK_DOWN` (or `LINK_FLAP` if the interface has flapped ≥4 times in the last 10 minutes) | L3 |
+| `linkUp` | `LINK_UP` (resolves any open `LINK_DOWN`/`LINK_FLAP` on that interface) | L3 |
+| `coldStart` / `warmStart` | `COLD_START` / `WARM_START` | L3 |
+| `authenticationFailure` | `AUTH_FAILURE` | L3 |
+| BGP established/backward-transition | `BGP_STATE_CHANGE` | L3 |
+| IS-IS adjacency down/up (on a bundle member) | `ISIS_NBR_DOWN` / `ISIS_NBR_UP` | L3 |
+| BFD session down | `BFD_SESSION_DOWN` | L3 |
+| Cisco CPU threshold | `HIGH_CPU` | L3 |
+| Cisco memory-pool-low | `HIGH_MEMORY` | L3 |
+| Cisco config-change | `CONFIG_CHANGE` | L3 |
+| Cisco environment/temperature | `ENV_ALARM` | L3 |
+| Cisco fan / redundant-supply failure | `FAN_FAILURE` / `PSU_FAILURE` | **L1** |
+| Cisco optical Rx-power threshold, or the fiber-fault generator's `opticalLossOfSignal`/`opticalSignalRestored` (`FIBER_CUT_OID`/`FIBER_CUT_CLEAR_OID`, synthetic — see below) | `OPTICAL_ALARM` | **L1** |
+| anything else | `UNKNOWN` | L3 |
 
 Flap detection (`backend/app/snmp/flapping.py`) keeps a rolling window
 per `(router, interface)`; once enough linkUp/linkDown transitions occur
@@ -102,9 +172,141 @@ just `down`/`up`. Window size and threshold are configurable via the
 Since the simulator runs as a single container standing in for 4400
 different routers, every trap carries the simulated router's management
 IP and interface name as extra varbinds (private OIDs under
-`1.3.6.1.4.1.9.9.9999.*`) so the listener knows which router "sent" it.
+`1.3.6.1.4.1.9.9.9999.*`) so the pipeline knows which router "sent" it.
 Real routers, each with their own IP, are identified by UDP source
 address instead — no simulator-specific varbinds required.
+
+## Alarm pipeline: Kafka + Neo4j
+
+Every trap — real or synthetic — flows through the same four-stage
+pipeline rather than being handled in one function call in the request
+path:
+
+1. **Mediation** (`backend/app/snmp/trap_listener.py`,
+   `backend/app/fiber_faults.py`) decodes/generates an event and
+   publishes it to the `raw-alarms` Kafka topic (`backend/app/streaming/
+   producer.py`). This is the *only* thing either module does now —
+   neither touches the database at all.
+2. **Normalization** (`backend/app/streaming/normalizer.py`, its own
+   container) consumes `raw-alarms`, maps the trap OID to Common-Alarm-
+   Model fields (`trap_name`/`incident_type`/`severity`/`layer`, via the
+   same `oid_map.py`/`INCIDENT_LAYER` tables above) with **no database or
+   graph access at all**, and republishes to `norm-alarms`. Onboarding a
+   new vendor's MIB is purely "add OID mappings here" — never a
+   schema/infra change.
+3. **Enrichment + root-cause correlation** (`backend/app/streaming/
+   correlator.py`, its own container) consumes `norm-alarms` and hands
+   each message to `app/snmp/classifier.py:classify_and_store` — the same
+   function that used to run synchronously in the trap listener's request
+   path before this pipeline existed. It looks up the router, persists
+   the `TrapEvent`/`Incident` rows (Postgres is the **alarm store**
+   throughout — Neo4j never holds mutable state), runs flap/bundle/BGP-
+   peering updates, and calls `app/correlation.py` for root-cause
+   correlation (below). The final WS-ready payload is published to
+   `incident-events`.
+4. **Delivery**: a background thread inside `backend`
+   (`app/streaming/ws_relay.py`) consumes `incident-events` and calls the
+   same `manager.broadcast()` the WebSocket already used — the frontend
+   needed zero changes for any of this.
+
+**Why a real message bus matters here**, not just as architecture
+cosplay: if `correlator` is down (a deploy, a crash), `raw-alarms`/
+`norm-alarms` keep buffering in Kafka instead of alarms being silently
+dropped, and it drains the backlog from its last committed offset the
+moment it's back — no gap. Try it: `docker compose stop correlator`,
+wait through a fiber-fault cycle (see below), `docker compose start
+correlator`, and watch it catch up.
+
+**The topology graph** (Neo4j, `backend/app/topology_graph.py`) is the
+piece a purely-relational version of this app never had: an explicit
+`(Interface)-[:SUPPORTED_BY]->(FiberSpan)` edge for "this L3 interface is
+physically carried over this fiber span," plus `(Router)-[:PEERS_WITH]-
+(Router)`. It's written once, in `api/bgp.py:seed_peerings`, right after
+the same topology is written to Postgres — and it only ever holds
+*structure*. `app/correlation.py` queries it to find which peering(s) a
+specific interface (or, when an incident carries no specific interface,
+the whole router) depends on, then queries **Postgres** for whether any
+of those peerings actually has an open L1 incident right now. Structure
+lives in the graph; state lives in the alarm store — never duplicated
+into both.
+
+**Deliberately not Flink.** The design this pipeline follows lists "Kafka
+Streams, Flink, or even a Python consumer with a sliding window" as
+equivalent options for the stream-processing step — `normalizer` and
+`correlator` are the latter: plain blocking Kafka consumers, not a Flink
+job on a JobManager/TaskManager cluster. At this app's alarm volume, a
+Flink cluster would add real operational weight (job submission,
+checkpointing, cluster topology) without a throughput problem to justify
+it; the same windowed-correlation logic runs identically either way.
+
+## L1/L3 layering and root-cause correlation
+
+Every incident carries a `layer` (`L1` or `L3`, see the trap
+classification table above), and `Incident.root_cause_incident_id` links
+an incident to whichever open **L1** incident on the same fiber link
+caused it — this is what turns a fiber cut into a single visible root
+cause instead of a wall of unrelated-looking router alarms.
+
+**The fiber-cut scenario** (`backend/app/fiber_faults.py`) is the
+concrete, always-running demonstration: every 15–40s it picks an
+established BGP peering with at least 2 SMF repeaters and knocks out one
+interior span for 10 seconds. Unlike the map-only "faulty segment"
+overlay this started as, it now raises a *real* chain of events through
+the pipeline above:
+
+1. An `OPTICAL_ALARM` incident opens, tied to the peering via
+   `Incident.peering_id` (not a router — a fiber cut isn't any one
+   router's problem). It goes through the normal auto-heal pipeline like
+   any other real optical alarm (`NOTIFY_ONLY` — a fiber cut can't be
+   fixed by a config push).
+2. One bundle member interface on **each side** of that peering loses IS-
+   IS adjacency (`ISIS_NBR_DOWN`) — a real, partial degradation, not the
+   whole bundle, since real fiber typically carries one wavelength/member
+   per physical strand.
+3. `app/correlation.py:try_link_root_cause` runs for each of those two new
+   `ISIS_NBR_DOWN` incidents: it asks Neo4j which peering(s) that specific
+   interface's fiber path is `SUPPORTED_BY`, then checks Postgres for an
+   open L1 incident on that peering within the last 60s
+   (`CORRELATION_WINDOW_SECONDS`). Finding the `OPTICAL_ALARM` from step
+   1, it sets `root_cause_incident_id` — marking both as **symptomatic**.
+4. Symptomatic incidents **never get their own auto-heal attempt**
+   (`classifier.py` skips `maybe_remediate` whenever
+   `root_cause_incident_id` is set) — bouncing a downstream interface
+   wouldn't fix an upstream fiber cut, and it avoids a redundant config
+   backup for every member a single fault happens to touch.
+5. After 10s, the reverse sequence resolves everything: both members'
+   `ISIS_NBR_UP`, then the `OPTICAL_ALARM` itself (via a synthetic
+   `FIBER_CUT_CLEAR_OID` event, resolved by peering rather than by
+   router+interface — see `flapping.py:resolve_incident_for_peering`).
+
+**In the UI:**
+- **Map** — an "L1 physical" / "L3 logical" layer toggle shows/hides the
+  fiber-span repeater dots + fault-segment line (L1) independently of
+  router markers + BGP/customer/reroute lines (L3). A peering with a
+  currently-open L1 incident gets a pulsing fault-segment line (reusing
+  the same blink timer as `needs_attention`), and the two routers on
+  either end get a dashed amber ring (`#fb923c`) distinct from the solid
+  orange `needs_attention` ring — "symptomatic of an upstream fault," not
+  "this router's own remediation failed."
+- **Incidents tab** — a Layer column, an "All/L1/L3" filter, and a "Hide
+  symptomatic" checkbox (checked by default) that filters out anything
+  with `root_cause_incident_id` set — matching the doc this app follows:
+  root cause stays visible, symptomatic alarms are suppressed from the
+  top-level view but never deleted. Unchecking it reveals a
+  "↳ symptomatic of #N (OPTICAL_ALARM)" note under each one.
+- **Drill-down**: `GET /api/incidents/{id}/tree` returns
+  `{root_cause, symptomatic: [...]}` — walking up to the true root first
+  if the given incident is itself a symptom, then listing everything
+  currently linked to that root.
+
+**Deliberately simplified vs. a real multi-tier optical network**: there's
+one L1 incident type (`OPTICAL_ALARM`) and one L3 tier, so causality
+ranking is just "is there an open L1 incident on this peering" rather
+than a multi-hop chain (fiber span > amplifier > transponder > router
+interface) — a real deployment would need the fuller topology
+(transponders, ROADMs, individual amplifiers as their own graph nodes)
+that the design doc this app follows calls out as the hardest, most-
+often-underinvested-in part of a real system.
 
 ## Auto-heal
 
@@ -127,9 +329,18 @@ incident don't re-trigger it):
    | `AUTH_FAILURE` | `NOTIFY_ONLY` (skipped) | possible security event — flagged for a human, never auto-remediated |
    | `ENV_ALARM` | `NOTIFY_ONLY` (skipped) | hardware/environmental — can't be fixed by a config change |
    | `CONFIG_CHANGE` | `NOTIFY_ONLY` (skipped) | config was already changed out-of-band; backup kept for diffing |
+   | `BFD_SESSION_DOWN` | `NOTIFY_ONLY` (skipped) | fast-failure-detection event — carrier-side/physical, needs NOC/carrier engagement |
+   | `ISIS_NBR_DOWN` | `NOTIFY_ONLY` (skipped) | likely a transient physical issue on one bundle member; the peering itself is unaffected unless every member goes down (see "Interface bundles" below) |
+   | `OPTICAL_ALARM` (incl. the fiber-cut scenario) | `NOTIFY_ONLY` (skipped) | hardware/fiber issue — can't be fixed by a config change; see "L1/L3 layering" above |
+   | `FAN_FAILURE` / `PSU_FAILURE` | `NOTIFY_ONLY` (skipped) | chassis hardware failure — NOC/dispatch notified |
+   | `HIGH_MEMORY` | `NOTIFY_ONLY` (skipped) | memory-pool exhaustion — flagged for human review rather than an automated process restart |
 
-   `LINK_UP`, `COLD_START`/`WARM_START`, and `UNKNOWN` are "good news" or
-   uninterpretable events and never enter the auto-heal pipeline at all.
+   `LINK_UP`, `COLD_START`/`WARM_START`, `ISIS_NBR_UP`, and `UNKNOWN` are
+   "good news" or uninterpretable events and never enter the auto-heal
+   pipeline at all. Whatever the type, an incident that's been linked as
+   **symptomatic** of an open L1 root cause (see "L1/L3 layering" above)
+   also skips auto-heal entirely, even if its type would otherwise be
+   actionable.
 
 Every backup and every action (success, failure, or skip, with a log) is
 persisted and shown in the UI: the **Incidents** tab has an "Auto-heal"
@@ -145,9 +356,11 @@ replace `_simulated_config_snapshot` and the action execution in
 `engine.py` with actual SSH/NETCONF/RESTCONF calls against the device,
 while keeping the same backup-then-act-then-record flow.
 
-**Manual resolution.** `AUTH_FAILURE`, `ENV_ALARM`, and `CONFIG_CHANGE`
-incidents get `NOTIFY_ONLY` and stay **open** - nothing auto-remediates
-them, so they sit there until a human closes them. The Incidents tab's
+**Manual resolution.** Every `NOTIFY_ONLY` incident type in the table
+above stays **open** - nothing auto-remediates them, so they sit there
+until a human closes them (or, for `ISIS_NBR_DOWN`/`OPTICAL_ALARM`
+specifically, until the matching "up"/"cleared" event resolves it - see
+"L1/L3 layering" above). The Incidents tab's
 "⚠ Needs manual review" filter pulls up exactly these; every open
 incident has a "Resolve" link, and a "Resolve N open (shown)" button
 above the table bulk-resolves whatever's currently open in the filtered
@@ -339,7 +552,9 @@ small set of colors reserved for things that aren't a health status.
 | BGP peering — down | red | `#ef4444` (same as router "down") |
 | Active reroute path (animated dashes) | purple | `#a855f7` — deliberately distinct from both established-blue and down-red, so "traffic detouring" reads differently from either steady state |
 | Marker outline — normal | near-black | `#0b0f1a` |
-| Marker outline — needs attention (blinking) | orange | `#f97316` |
+| Marker outline — needs attention (blinking, solid ring) | orange | `#f97316` |
+| Marker outline — symptomatic of an open L1 fault (dashed ring) | amber | `#fb923c` |
+| Fiber-fault segment line — cosmetic overlay only | orange | `#f97316` (same as needs-attention; pulses when the underlying incident is real - see "L1/L3 layering") |
 
 The customer-uplink and BGP-line palettes are intentionally *not* the
 same as the marker fill colors: a plain "up"-green line would nearly
@@ -421,6 +636,19 @@ returns `501` and `Router.location` doesn't exist):
    for both (`psycopg2-binary`, `pymysql`) are already in
    `backend/requirements.txt`.
 
+SQLite specifically has one new wrinkle since `correlator` became its own
+container (see "Alarm pipeline" above): SQLite is a local file, and only
+`backend`'s container has the `backend-data` volume mounted, so
+`correlator` would end up writing to its own separate, empty SQLite file
+instead of sharing one. SQLite here is really meant for running the
+backend directly on your machine outside docker-compose (see its comment
+in `.env.example`); under docker-compose, use Postgres or MySQL, both
+real network services every container reaches the same way.
+
+Neither Kafka nor Neo4j are affected by this choice at all — they're
+independent of `DATABASE_URL` and stay exactly as configured regardless
+of which SQL database the alarm store uses.
+
 ## Regenerating the fleet
 
 `generate_routers.py` and `generate_customer_routers.py` both place their
@@ -447,7 +675,10 @@ python3 generate_customer_routers.py   # rewrites customer_routers_seed.json (10
 
 | Env var | Where | Default | Purpose |
 |---|---|---|---|
-| `DATABASE_URL` | backend | `postgresql+psycopg2://ncr:ncr@postgres:5432/ncr` | SQLAlchemy connection string |
+| `DATABASE_URL` | backend, correlator | `postgresql+psycopg2://ncr:ncr@postgres:5432/ncr` | SQLAlchemy connection string (the alarm store) |
+| `KAFKA_BOOTSTRAP_SERVERS` | backend, normalizer, correlator | `kafka:9092` | Kafka broker address for the alarm pipeline (see "Alarm pipeline" above) |
+| `NEO4J_URI` | backend, correlator | `bolt://neo4j:7687` | Topology graph connection - written by `backend` (on BGP seed), read by `correlator` (root-cause lookups) |
+| `NEO4J_USER` / `NEO4J_PASSWORD` | backend, correlator | `neo4j` / `ncrpassword` | Neo4j credentials the app connects with. `NEO4J_PASSWORD` also drives the `neo4j` service's own `NEO4J_AUTH` in `docker-compose.yml` (`${NEO4J_PASSWORD:-ncrpassword}`), so changing it in `.env` updates both sides from one value; `NEO4J_USER` only changes what the app sends - the server's admin username is always `neo4j` (the image's own default), so leave it as-is unless you also change that server-side |
 | `TRAP_PORT` | backend | `1162` | UDP port the trap listener binds |
 | `FLAP_WINDOW_SECONDS` | backend | `600` | Sliding window for flap detection |
 | `FLAP_TRANSITION_THRESHOLD` | backend | `4` | Transitions within the window to call it "flapping" |

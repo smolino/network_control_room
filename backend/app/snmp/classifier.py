@@ -4,13 +4,15 @@ from sqlalchemy.orm import Session
 
 from app.bgp_topology import build_established_adjacency, shortest_reroute_path
 from app.bundles import update_member_and_bundle
+from app.correlation import try_link_root_cause
 from app.models import BgpPeering, BgpSessionStatus, BundleStatus, Incident, IncidentStatus, IncidentType, Router, RouterStatus, TrapEvent
 from app.remediation.engine import NOTIFY_ONLY_REASONS, maybe_remediate, needs_attention_router_ids
-from app.snmp.flapping import evaluate_isis_adjacency_event, evaluate_link_event, open_incident
+from app.snmp.flapping import evaluate_isis_adjacency_event, evaluate_link_event, open_incident, resolve_incident_for_peering
 from app.snmp.oid_map import (
     BGP_ESTABLISHED_OID,
     BGP_BACKWARD_TRANSITION_OID,
     BGP_PEER_OID,
+    FIBER_CUT_CLEAR_OID,
     IF_NAME_OID,
     ISIS_ADJACENCY_DOWN_OID,
     ISIS_ADJACENCY_UP_OID,
@@ -69,6 +71,7 @@ def _log_transient_incident(
     description: str,
     now: datetime,
     interface_name: str | None = None,
+    peering_id: int | None = None,
 ) -> tuple[Incident, bool]:
     # Types with no automated fix (see NOTIFY_ONLY_REASONS) are genuinely
     # still unhandled - nothing has resolved them, they're just waiting on
@@ -81,7 +84,7 @@ def _log_transient_incident(
     # notification whose auto-heal action is presumed to have addressed it,
     # so it's always logged as a fresh already-resolved entry.
     if incident_type in NOTIFY_ONLY_REASONS:
-        return open_incident(db, router, incident_type, interface_name, description)
+        return open_incident(db, router, incident_type, interface_name, description, peering_id=peering_id)
 
     incident = Incident(
         router_id=router.id,
@@ -97,10 +100,15 @@ def _log_transient_incident(
     return incident, True
 
 
-def classify_and_store(db: Session, source_ip: str, trap_oid: str, varbinds: list[tuple[str, str]]) -> dict | None:
+def classify_and_store(
+    db: Session, source_ip: str, trap_oid: str, varbinds: list[tuple[str, str]], peering_id: int | None = None
+) -> dict | None:
     """Classify one decoded trap, persist it, run flap detection, and return
     a JSON-serializable payload for the WebSocket broadcast (or None if the
-    trap could not be attributed to a known router)."""
+    trap could not be attributed to a known router). `peering_id` is set
+    only for app.fiber_faults' synthetic FIBER_CUT_OID/FIBER_CUT_CLEAR_OID
+    events - it attributes the resulting L1 incident to a specific link
+    rather than a router, and scopes FIBER_CUT_CLEAR_OID's resolve lookup."""
 
     router_id_value = _extract_varbind(varbinds, ROUTER_ID_OID)
     interface_name = _extract_varbind(varbinds, IF_NAME_OID)
@@ -151,6 +159,18 @@ def classify_and_store(db: Session, source_ip: str, trap_oid: str, varbinds: lis
             )
             new_status = BgpSessionStatus.ESTABLISHED if bundle.status == BundleStatus.UP else BgpSessionStatus.DOWN
             bgp_peering = _update_bgp_peering(db, router, peer_router.mgmt_ip, new_status, now)
+    elif trap_oid == FIBER_CUT_CLEAR_OID:
+        # Resolves the L1 incident app.fiber_faults opened for this
+        # peering - peering-scoped, not router+interface-scoped, since a
+        # fiber cut isn't attached to any one interface. No-op (drop the
+        # trap without a broadcast) if it's already resolved or the
+        # peering vanished, same as any other event that arrives too late
+        # to matter.
+        resolved = resolve_incident_for_peering(db, peering_id, IncidentType.OPTICAL_ALARM, now) if peering_id is not None else None
+        if resolved is None:
+            db.rollback()
+            return None
+        incident, created = resolved, False
     else:
         if incident_type in (IncidentType.COLD_START, IncidentType.WARM_START):
             router.status = RouterStatus.UP
@@ -172,9 +192,17 @@ def classify_and_store(db: Session, source_ip: str, trap_oid: str, varbinds: lis
             description,
             now,
             interface_name=interface_name,
+            peering_id=peering_id,
         )
 
     trap_event.incident_id = incident.id
+
+    # Topology-based root-cause correlation: only relevant the first time an
+    # incident opens (a repeat trap just bumping trap_count is already
+    # linked or already independent), and only for L3 incidents - see
+    # app.correlation.
+    if created:
+        try_link_root_cause(db, incident, now)
 
     db.commit()
     db.refresh(trap_event)
@@ -185,8 +213,10 @@ def classify_and_store(db: Session, source_ip: str, trap_oid: str, varbinds: lis
 
     # Auto-heal pipeline: only on the first occurrence of a given open
     # incident, never on repeat traps that just bump an existing incident's
-    # trap_count (otherwise every re-trigger would take a fresh backup).
-    remediation = maybe_remediate(db, router, incident) if created else None
+    # trap_count (otherwise every re-trigger would take a fresh backup), and
+    # never for an incident that's just a symptom of an already-open L1
+    # root cause - bouncing a downstream interface wouldn't fix a fiber cut.
+    remediation = maybe_remediate(db, router, incident) if created and incident.root_cause_incident_id is None else None
 
     # Computed fresh after remediation/incident state settles, so a router
     # whose incident just got resolved (e.g. by this same linkUp) correctly
@@ -200,6 +230,9 @@ def classify_and_store(db: Session, source_ip: str, trap_oid: str, varbinds: lis
         "status": incident.status.value,
         "trap_count": incident.trap_count,
         "description": incident.description,
+        "layer": incident.layer.value,
+        "peering_id": incident.peering_id,
+        "root_cause_incident_id": incident.root_cause_incident_id,
     }
     if remediation:
         incident_payload["remediation"] = remediation

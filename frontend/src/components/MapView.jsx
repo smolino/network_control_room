@@ -45,6 +45,11 @@ const REROUTE_DASH_LENGTH = 18; // sum of REROUTE_DASH - keeps the offset wrap s
 
 const MARKER_STROKE = "#0b0f1a";
 const ALERT_STROKE = "#f97316";
+// Dashed ring for a router that's an endpoint of a peering with an open L1
+// (fiber) incident, but hasn't itself failed auto-heal - distinguishes
+// "symptomatic of an upstream physical fault" from the solid ALERT_STROKE
+// ring, which means this router's own remediation attempt failed.
+const SYMPTOMATIC_STROKE = "#fb923c";
 
 // Blink cadence for routers whose auto-heal attempt failed to fix the
 // problem - stops on its own once the router recovers, since
@@ -108,7 +113,7 @@ function repeaterPositions(a, b, count) {
   return points;
 }
 
-function RouterMarker({ r, radius, fillOpacity, blinkOn, onSelectRouter, parentHostname }) {
+function RouterMarker({ r, radius, fillOpacity, blinkOn, onSelectRouter, parentHostname, symptomatic }) {
   // Customer CPE is single-homed, so a down/flapping status IS the outage -
   // there's no separate peering line to carry that signal the way a
   // primary's BGP mesh does, so the marker itself blinks to flag it.
@@ -116,13 +121,17 @@ function RouterMarker({ r, radius, fillOpacity, blinkOn, onSelectRouter, parentH
   const shouldBlink = r.needs_attention || connectionIssue;
   const alerting = shouldBlink && blinkOn;
   const statusColor = r.router_type === "customer" ? CUSTOMER_STATUS_COLOR : STATUS_COLOR;
+  // needs_attention (solid ring, own remediation failed) always wins over
+  // symptomatic (dashed ring, upstream fiber cut correlated to this router).
+  const showSymptomaticRing = symptomatic && !r.needs_attention;
   return (
     <CircleMarker
       center={[r.latitude, r.longitude]}
       radius={r.status === "flapping" || alerting ? radius + 3 : radius}
       pathOptions={{
-        color: r.needs_attention ? ALERT_STROKE : MARKER_STROKE,
-        weight: alerting ? 3 : 1.25,
+        color: r.needs_attention ? ALERT_STROKE : showSymptomaticRing ? SYMPTOMATIC_STROKE : MARKER_STROKE,
+        weight: alerting ? 3 : showSymptomaticRing ? 2 : 1.25,
+        dashArray: showSymptomaticRing ? "3 3" : undefined,
         fillColor: statusColor[r.status] || statusColor.unknown,
         fillOpacity: shouldBlink ? (blinkOn ? 1 : 0.35) : fillOpacity,
       }}
@@ -148,6 +157,11 @@ function RouterMarker({ r, radius, fillOpacity, blinkOn, onSelectRouter, parentH
               ⚠ connection issue
             </div>
           )}
+          {showSymptomaticRing && (
+            <div style={{ color: SYMPTOMATIC_STROKE, fontWeight: 600, marginTop: "0.25rem" }}>
+              ↳ symptomatic of a fiber fault on this link (L1 root cause)
+            </div>
+          )}
           <div style={{ marginTop: "0.4rem" }}>
             <span className="link" onClick={() => onSelectRouter(r.id)}>
               View details →
@@ -160,6 +174,13 @@ function RouterMarker({ r, radius, fillOpacity, blinkOn, onSelectRouter, parentH
 }
 
 export default function MapView({ routers, peerings = [], onSelectRouter }) {
+  // Top-level L1/L3 layer toggles (§7.2 of the design doc this map is
+  // modeled on) - L1 is the physical fiber plane (repeater dots + fault
+  // segment), L3 is the logical/control-plane plane (routers, BGP/customer
+  // links, reroutes). The finer-grained toggles below still apply within
+  // whichever layers are on.
+  const [showL1, setShowL1] = useState(true);
+  const [showL3, setShowL3] = useState(true);
   const [showBgpLinks, setShowBgpLinks] = useState(true);
   const [showRepeaters, setShowRepeaters] = useState(true);
   const [showCustomers, setShowCustomers] = useState(true);
@@ -176,16 +197,31 @@ export default function MapView({ routers, peerings = [], onSelectRouter }) {
 
   const primaries = useMemo(() => routers.filter((r) => r.router_type !== "customer"), [routers]);
   const customers = useMemo(() => routers.filter((r) => r.router_type === "customer"), [routers]);
-  // Gates the blink interval below - covers both the existing "auto-heal
-  // failed" case and a customer CPE's own down/flapping status (see
-  // connectionIssue in RouterMarker), so the interval only runs while
-  // something actually needs it blinking.
+  // Peerings with a currently-open L1 (fiber) incident - drives both the
+  // pulsing fault-segment line and the affected endpoint routers' dashed
+  // "symptomatic" ring (see app.correlation on the backend).
+  const openL1Peerings = useMemo(() => peerings.filter((p) => p.open_l1_incident_id), [peerings]);
+  const symptomaticRouterIds = useMemo(() => {
+    const ids = new Set();
+    for (const p of openL1Peerings) {
+      ids.add(p.router_a_id);
+      ids.add(p.router_b_id);
+    }
+    return ids;
+  }, [openL1Peerings]);
+
+  // Gates the blink interval below - covers the existing "auto-heal failed"
+  // case, a customer CPE's own down/flapping status (see connectionIssue in
+  // RouterMarker), and now an open L1 fiber incident's pulsing fault
+  // segment, so the interval only runs while something actually needs it
+  // blinking.
   const anyBlinking = useMemo(
     () =>
+      openL1Peerings.length > 0 ||
       routers.some(
         (r) => r.needs_attention || (r.router_type === "customer" && (r.status === "down" || r.status === "flapping"))
       ),
-    [routers]
+    [routers, openL1Peerings]
   );
 
   // Down peerings that currently have an alternate path through the mesh -
@@ -239,6 +275,16 @@ export default function MapView({ routers, peerings = [], onSelectRouter }) {
           gap: "0.3rem",
         }}
       >
+        <div style={{ display: "flex", gap: "0.75rem", paddingBottom: "0.3rem", borderBottom: "1px solid #262f45" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer" }}>
+            <input type="checkbox" checked={showL1} onChange={(e) => setShowL1(e.target.checked)} />
+            L1 physical
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer" }}>
+            <input type="checkbox" checked={showL3} onChange={(e) => setShowL3(e.target.checked)} />
+            L3 logical
+          </label>
+        </div>
         <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer" }}>
           <input
             type="checkbox"
@@ -282,12 +328,12 @@ export default function MapView({ routers, peerings = [], onSelectRouter }) {
         style={{ height: "100%", width: "100%" }}
       >
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-          subdomains="abcd"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
         {showCustomers &&
+          showL3 &&
           customers.flatMap((c) => {
             if (!c.parent_router_id) return [];
             const parent = routerById[c.parent_router_id];
@@ -311,7 +357,7 @@ export default function MapView({ routers, peerings = [], onSelectRouter }) {
             ));
           })}
 
-        {showBgpLinks &&
+        {(showL1 || (showL3 && showBgpLinks)) &&
           peerings.flatMap((p) => {
             const a = routerById[p.router_a_id];
             const b = routerById[p.router_b_id];
@@ -321,46 +367,59 @@ export default function MapView({ routers, peerings = [], onSelectRouter }) {
               [a.latitude, a.longitude],
               [b.latitude, b.longitude],
             ]);
-            const lines = worldCopies(positions).map((pos, i) => (
-              <Polyline
-                key={`${p.id}-${i}`}
-                positions={pos}
-                pathOptions={{
-                  color: BGP_COLOR[p.status] || BGP_COLOR.established,
-                  weight: down ? 2.5 : 1.5,
-                  opacity: down ? 0.9 : 0.6,
-                }}
-              />
-            ));
+            const lines =
+              showL3 && showBgpLinks
+                ? worldCopies(positions).map((pos, i) => (
+                    <Polyline
+                      key={`${p.id}-${i}`}
+                      positions={pos}
+                      pathOptions={{
+                        color: BGP_COLOR[p.status] || BGP_COLOR.established,
+                        weight: down ? 2.5 : 1.5,
+                        opacity: down ? 0.9 : 0.6,
+                      }}
+                    />
+                  ))
+                : [];
             const reps = repeaterPositions(positions[0], positions[1], p.repeater_count || 0);
-            const repeaters = reps.flatMap((point, ri) =>
-              worldCopies([point]).map((copy, ci) => (
-                <CircleMarker
-                  key={`repeater-${p.id}-${ri}-${ci}`}
-                  center={copy[0]}
-                  radius={2}
-                  pathOptions={{
-                    color: MARKER_STROKE,
-                    weight: showRepeaters ? 0.5 : 0,
-                    fillColor: "#ffffff",
-                    fillOpacity: showRepeaters ? 0.9 : 0.08,
-                    opacity: showRepeaters ? 1 : 0.08,
-                  }}
-                />
-              ))
-            );
+            const repeaters = showL1
+              ? reps.flatMap((point, ri) =>
+                  worldCopies([point]).map((copy, ci) => (
+                    <CircleMarker
+                      key={`repeater-${p.id}-${ri}-${ci}`}
+                      center={copy[0]}
+                      radius={2}
+                      pathOptions={{
+                        color: MARKER_STROKE,
+                        weight: showRepeaters ? 0.5 : 0,
+                        fillColor: "#ffffff",
+                        fillOpacity: showRepeaters ? 0.9 : 0.08,
+                        opacity: showRepeaters ? 1 : 0.08,
+                      }}
+                    />
+                  ))
+                )
+              : [];
             // active_fault_segment is 1-based: the fault sits strictly
             // between the (segment-1)-th and segment-th repeater (0-based
             // into `reps`), never touching either router endpoint - see
-            // app/fiber_faults.py.
+            // app/fiber_faults.py. open_l1_incident_id means this is a real,
+            // still-open OPTICAL_ALARM incident (not just the cosmetic
+            // overlay) - pulse it via the same blink timer as needs_attention
+            // routers so it visually reads as "root cause, actively faulted".
             const fault = p.active_fault_segment;
+            const hasOpenL1Incident = Boolean(p.open_l1_incident_id);
             const faultLine =
-              fault && reps[fault - 1] && reps[fault]
+              showL1 && fault && reps[fault - 1] && reps[fault]
                 ? worldCopies(unwrapPositions([reps[fault - 1], reps[fault]])).map((pos, i) => (
                     <Polyline
                       key={`fault-${p.id}-${i}`}
                       positions={pos}
-                      pathOptions={{ color: ALERT_STROKE, weight: 4, opacity: 1 }}
+                      pathOptions={{
+                        color: ALERT_STROKE,
+                        weight: hasOpenL1Incident && blinkOn ? 5 : 4,
+                        opacity: hasOpenL1Incident ? (blinkOn ? 1 : 0.45) : 1,
+                      }}
                     />
                   ))
                 : [];
@@ -368,6 +427,7 @@ export default function MapView({ routers, peerings = [], onSelectRouter }) {
           })}
 
         {showReroutes &&
+          showL3 &&
           activeReroutes.flatMap((p) => {
             const positions = unwrapPositions(
               p.reroute_path
@@ -393,6 +453,7 @@ export default function MapView({ routers, peerings = [], onSelectRouter }) {
           })}
 
         {showCustomers &&
+          showL3 &&
           customers.map((c) => (
             <RouterMarker
               key={c.id}
@@ -402,12 +463,22 @@ export default function MapView({ routers, peerings = [], onSelectRouter }) {
               blinkOn={blinkOn}
               onSelectRouter={onSelectRouter}
               parentHostname={routerById[c.parent_router_id]?.hostname}
+              symptomatic={symptomaticRouterIds.has(c.id)}
             />
           ))}
 
-        {primaries.map((r) => (
-          <RouterMarker key={r.id} r={r} radius={6.5} fillOpacity={0.95} blinkOn={blinkOn} onSelectRouter={onSelectRouter} />
-        ))}
+        {showL3 &&
+          primaries.map((r) => (
+            <RouterMarker
+              key={r.id}
+              r={r}
+              radius={6.5}
+              fillOpacity={0.95}
+              blinkOn={blinkOn}
+              onSelectRouter={onSelectRouter}
+              symptomatic={symptomaticRouterIds.has(r.id)}
+            />
+          ))}
       </MapContainer>
     </div>
   );

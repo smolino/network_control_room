@@ -12,10 +12,18 @@ services:
       FLAP_WINDOW_SECONDS: 600
       FLAP_TRANSITION_THRESHOLD: 4
       CORS_ORIGINS: "*"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-ncrpassword}
     volumes:
       - backend-data:/app/data
     depends_on:
       postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      neo4j:
         condition: service_healthy
     # The postgis/postgis image restarts itself once internally after
     # initdb to load the extension - pg_isready can report healthy for a
@@ -28,6 +36,82 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
+  # Message bus between mediation (trap_listener/fiber_faults, inside
+  # `backend`) and the normalizer/correlator services below - see
+  # app/streaming/. Single broker, KRaft mode (no ZooKeeper needed).
+  kafka:
+    image: apache/kafka:3.8.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  # Static topology graph (Router/Interface/FiberSpan + SUPPORTED_BY) used
+  # by app.correlation for root-cause traversal - see app/topology_graph.py.
+  # Written by api/bgp.py:seed_peerings; mutable alarm state stays in
+  # Postgres, never here.
+  neo4j:
+    image: neo4j:5.24
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-ncrpassword}
+    ports:
+      - "7474:7474"  # browser UI at http://localhost:7474 - handy for inspecting the graph
+      - "7687:7687"  # bolt - the Neo4j Browser above runs *in your browser* and connects
+                     # directly to this via WebSocket, so it has to be reachable from the
+                     # host too, not just from other containers on the compose network
+
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  # Normalization service: raw-alarms -> norm-alarms. Stateless (no DB/
+  # Neo4j access) - see app/streaming/normalizer.py. Reuses the `backend`
+  # image; only the command differs.
+  normalizer:
+    build: ./backend
+    command: python -m app.streaming.normalizer
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: on-failure
+
+  # Enrichment + correlation + alarm store: norm-alarms -> Postgres write +
+  # Neo4j-backed root-cause correlation -> incident-events. See
+  # app/streaming/correlator.py.
+  correlator:
+    build: ./backend
+    command: python -m app.streaming.correlator
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://ncr:ncr@postgres:5432/ncr}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-ncrpassword}
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    restart: on-failure
 
   # Default database: Postgres with the PostGIS extension, used for router
   # geolocation (Router.location) and the nearest-router spatial lookup -
@@ -115,4 +199,5 @@ volumes:
   certbot-conf:
   certbot-www:
   postgres-data:
+  neo4j-data:
   # mysql-data:

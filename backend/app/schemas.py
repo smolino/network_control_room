@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.models import (
+    AlarmLayer,
     BgpSessionStatus,
     BundleStatus,
     IncidentStatus,
@@ -102,6 +103,14 @@ class IncidentOut(BaseModel):
     description: str | None = None
     resolved_manually: bool = False
     remediation: RemediationSummary | None = None
+    # Common-Alarm-Model-style layer + topology-based root-cause linkage -
+    # see app.correlation. peering_id is set only for L1 incidents that
+    # stem from a specific fiber link (app.fiber_faults); root_cause_
+    # incident_id is set on an L3 incident once it's been linked as a
+    # symptom of an open L1 incident on the same peering.
+    layer: AlarmLayer
+    peering_id: int | None = None
+    root_cause_incident_id: int | None = None
 
 
 class BulkResolveIn(BaseModel):
@@ -179,6 +188,11 @@ class BgpPeeringOut(BaseModel):
     # of the time. In-memory/computed at serialize time, not persisted -
     # see api/bgp.py:_to_peering_out.
     active_fault_segment: int | None = None
+    # Id of this peering's currently-open L1 (fiber) incident, if any - lets
+    # the frontend distinguish "genuinely faulted right now" from a resolved
+    # fault whose segment marker just hasn't updated yet. In-memory/computed
+    # at serialize time, like active_fault_segment - see api/bgp.py:_to_peering_out.
+    open_l1_incident_id: int | None = None
     # Router ids for the surviving path traffic is rerouted over while this
     # peering is down (router_a_id ... router_b_id inclusive), or None if
     # it's established or no alternate path exists in the current mesh.

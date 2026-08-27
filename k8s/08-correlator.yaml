@@ -1,0 +1,48 @@
+# Enrichment + Neo4j-backed root-cause correlation + the actual Postgres
+# write: norm-alarms -> incident-events. Reuses the backend image with a
+# different command, same as docker-compose.yml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: correlator
+  namespace: ncr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: correlator
+  template:
+    metadata:
+      labels:
+        app: correlator
+    spec:
+      imagePullSecrets:
+        - name: dockerhub-cred
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z kafka 9092; do echo waiting for kafka; sleep 2; done
+              until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done
+              until nc -z neo4j 7687; do echo waiting for neo4j; sleep 2; done
+      containers:
+        - name: correlator
+          image: docker.io/mescalo/network-control-room-backend:latest
+          command: ["python", "-m", "app.streaming.correlator"]
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: KAFKA_BOOTSTRAP_SERVERS}}
+            - name: NEO4J_URI
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: NEO4J_URI}}
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: ncr-secrets, key: DATABASE_URL}}
+            - name: NEO4J_USER
+              valueFrom: {secretKeyRef: {name: ncr-secrets, key: NEO4J_USER}}
+            - name: NEO4J_PASSWORD
+              valueFrom: {secretKeyRef: {name: ncr-secrets, key: NEO4J_PASSWORD}}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
