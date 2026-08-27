@@ -105,8 +105,8 @@ incident type; topology graph → root cause; incident type → playbook).
   event mix on primaries (link flaps, BGP/CPU/temperature/config/auth
   events), and a much quieter trickle of occasional link blips on
   customer routers.
-- **frontend/** — React + Vite app with a Leaflet world map on a dark
-  basemap (routers colored by status: green=up, red=down,
+- **frontend/** — React + Vite app with a Leaflet world map on an
+  OpenStreetMap basemap (routers colored by status: green=up, red=down,
   yellow=flapping — see [Color reference](#color-reference); primaries
   as larger dots, customers as small dots near their primary), an L1/L3
   layer toggle, a dashboard scoped to the backbone's health, and
@@ -138,6 +138,45 @@ map fills in and incidents start appearing shortly after
 `normalizer`/`correlator`) briefly log Kafka connection retries on a cold
 start, that's expected — they retry with backoff until the broker's ready
 rather than crash-looping.
+
+## Deploying to Kubernetes
+
+`k8s/` has a plain-manifest (no Helm) deployment of the same stack, split
+across the same services as `docker-compose.yml` — Postgres, Kafka, Neo4j,
+`backend`, `normalizer`, `correlator`, `simulator`, `frontend` — into a
+dedicated `ncr` namespace. It expects prebuilt images already published to a
+registry rather than building from source in-cluster:
+
+```bash
+./scripts/build-and-push.sh          # builds + pushes backend/frontend/simulator
+                                      # to docker.io/mescalo/network-control-room-*:latest
+kubectl apply -f k8s/
+```
+
+`build-and-push.sh` requires `docker login docker.io` first, and always
+targets `linux/AMD64` regardless of the host architecture (`frontend/
+Dockerfile`'s build stage is `--platform=$BUILDPLATFORM` so it still cross-
+builds correctly from an Apple Silicon host); override the tag with
+`TAG=v1.2.3 ./scripts/build-and-push.sh`. If `docker.io/mescalo` isn't a
+public repo you can pull from, create an `imagePullSecrets` credential first
+— see the comment in `k8s/01-secret.yaml`.
+
+A few things differ from the compose setup:
+- **Config** is split the same way as the env vars documented below:
+  secrets (DB/Neo4j credentials) in `k8s/01-secret.yaml`, everything else in
+  `k8s/02-configmap.yaml` — both use the same default values as
+  `docker-compose.yml`/`.env.example`, so change them there before applying
+  outside a throwaway/demo cluster.
+- **Frontend TLS**: the `frontend` image's baked-in nginx config is HTTPS-
+  only and hardcoded to `controlroom.point2point.org.uk` with Let's Encrypt
+  certs from the `certbot` compose service, neither of which exists
+  in-cluster. `k8s/10-frontend.yaml` mounts a ConfigMap that overrides
+  `/etc/nginx/conf.d/default.conf` at runtime with a plain-HTTP config
+  (same `/api`, `/ws` proxy routes) instead of building a separate k8s-only
+  image — add TLS back later via an Ingress + cert-manager without touching
+  the image.
+- **Access**: `frontend`'s Service is `NodePort` (`kubectl get svc -n ncr
+  frontend` to see which port); there's no Ingress in these manifests.
 
 ## Trap classification
 
@@ -546,7 +585,7 @@ small set of colors reserved for things that aren't a health status.
 
 | Element | Color | Hex |
 |---|---|---|
-| Basemap | CartoDB "Dark Matter" dark tiles | — (no green/tan land colors to clash with the line/marker palette) |
+| Basemap | OpenStreetMap standard tiles (`tile.openstreetmap.org`) | — switched from CARTO's `dark_all` raster tiles, which now require a paid-tier API key and render an "API key required" watermark without one; the customer-uplink/BGP-line palette below was already designed to stay legible against tile-map greens/tans for exactly this reason |
 | Healthy customer uplink line | slate | `#64748b` |
 | BGP peering — established | blue | `#3b82f6` |
 | BGP peering — down | red | `#ef4444` (same as router "down") |
