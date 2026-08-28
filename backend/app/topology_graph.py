@@ -65,6 +65,31 @@ def sync_peering_to_neo4j(peering, bundle_a, bundle_b) -> None:
         )
 
 
+def delete_peering_from_neo4j(peering_id: int) -> None:
+    """Removes the FiberSpan for this peering and the Interface nodes that
+    were only SUPPORTED_BY it - an interface is only ever seeded onto one
+    peering's span (see sync_peering_to_neo4j), so this always removes
+    exactly the pair sync_peering_to_neo4j created. Mirrors the peering
+    being removed from Postgres - see api/routers.py:delete_router."""
+    with get_driver().session() as session:
+        session.run(
+            """
+            MATCH (span:FiberSpan {peering_id: $peering_id})
+            OPTIONAL MATCH (i:Interface)-[:SUPPORTED_BY]->(span)
+            DETACH DELETE span, i
+            """,
+            peering_id=peering_id,
+        )
+
+
+def delete_router_from_neo4j(router_id: int) -> None:
+    """Removes the Router node (and any dangling PEERS_WITH edge) once
+    every peering referencing it has already been removed via
+    delete_peering_from_neo4j - see api/routers.py:delete_router."""
+    with get_driver().session() as session:
+        session.run("MATCH (r:Router {id: $router_id}) DETACH DELETE r", router_id=router_id)
+
+
 def peering_ids_for_interface(router_id: int, interface_name: str) -> list[int]:
     """The peering(s) whose fiber span this specific interface is
     SUPPORTED_BY - the precise case (§5.1's topology traversal)."""

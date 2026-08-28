@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
+import { deleteRouter } from "../api.js";
 
-export default function RouterList({ routers, selectedRouterId, onSelectRouter }) {
+export default function RouterList({ routers, selectedRouterId, onSelectRouter, onRouterDeleted }) {
   const [filter, setFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("primary");
+  const [deletingId, setDeletingId] = useState(null);
 
   const routerById = useMemo(() => Object.fromEntries(routers.map((r) => [r.id, r])), [routers]);
 
@@ -19,6 +21,22 @@ export default function RouterList({ routers, selectedRouterId, onSelectRouter }
       );
     });
   }, [routers, filter, typeFilter]);
+
+  const handleDelete = async (e, r) => {
+    e.stopPropagation();
+    if (!window.confirm(`Remove ${r.hostname} (${r.mgmt_ip})? Its BGP peerings will be removed too. This can't be undone.`)) {
+      return;
+    }
+    setDeletingId(r.id);
+    try {
+      await deleteRouter(r.id);
+      await onRouterDeleted?.(r.id);
+    } catch (err) {
+      window.alert(`Failed to remove ${r.hostname}: ${err.message}`);
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   return (
     <div className="page">
@@ -56,6 +74,7 @@ export default function RouterList({ routers, selectedRouterId, onSelectRouter }
               <th>Country</th>
               <th>Status</th>
               <th>Last seen</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -80,10 +99,15 @@ export default function RouterList({ routers, selectedRouterId, onSelectRouter }
                 <td>{r.city}, {r.country}</td>
                 <td><span className={`badge ${r.status}`}>{r.status}</span></td>
                 <td>{r.last_seen_at ? new Date(r.last_seen_at).toLocaleString() : "never"}</td>
+                <td>
+                  <span className="link" onClick={(e) => handleDelete(e, r)}>
+                    {deletingId === r.id ? "Removing…" : "Remove"}
+                  </span>
+                </td>
               </tr>
             ))}
             {filtered.length === 0 && (
-              <tr><td colSpan={8}>No routers match this filter.</td></tr>
+              <tr><td colSpan={9}>No routers match this filter.</td></tr>
             )}
           </tbody>
         </table>

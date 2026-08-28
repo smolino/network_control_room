@@ -155,6 +155,10 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      # Set DISABLE_SSL=true in .env for local dev - no Let's Encrypt
+      # certificate available, so nginx serves plain HTTP instead.
+      DISABLE_SSL: ${DISABLE_SSL:-false}
     volumes:
       - certbot-conf:/etc/letsencrypt:ro
       - certbot-www:/var/www/certbot

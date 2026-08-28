@@ -44,3 +44,57 @@ def init_db():
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
 
     Base.metadata.create_all(bind=engine)
+    _seed_default_router_models()
+
+
+# Starter catalog for the Add Fleet form's Vendor/Model dropdowns (see
+# app.models.RouterModel) - a realistic multi-vendor mix (Cisco IP/MPLS core
+# + its ONS 15454 optical platform, Arista, Ciena) plus the CPE-class models
+# already used elsewhere in this project (simulator/generate_customer_routers.py,
+# frontend/src/components/AddFleet.jsx's old placeholders), so the dropdowns
+# aren't empty on a fresh install.
+DEFAULT_ROUTER_MODELS = [
+    ("Cisco", "ASR1001-X"),
+    ("Cisco", "ASR1002-HX"),
+    ("Cisco", "ASR9001"),
+    ("Cisco", "ASR9010"),
+    ("Cisco", "ASR9903"),
+    ("Cisco", "8201"),
+    ("Cisco", "8202"),
+    ("Cisco", "8712"),
+    ("Cisco", "ONS 15454"),
+    ("Cisco", "ISR4451-X"),
+    ("Cisco", "ISR4331"),
+    ("Cisco", "ISR4321"),
+    ("Cisco", "Catalyst 8300-1N1S"),
+    ("Cisco", "Catalyst 8500L-8S4X"),
+    ("Cisco", "CRS-1000"),
+    ("Cisco", "NCS 5501"),
+    ("Cisco", "ISR1100-4G"),
+    ("Cisco", "ISR1101"),
+    ("Cisco", "C1111-8P"),
+    ("Cisco", "Catalyst 1300"),
+    ("Cisco", "RV340"),
+    ("Cisco", "RV160"),
+    ("Arista", "7280R3"),
+    ("Arista", "7280SR3"),
+    ("Arista", "7500R3"),
+    ("Arista", "7050X3"),
+    ("Ciena", "6500"),
+    ("Ciena", "5170"),
+    ("Ciena", "8180"),
+    ("Ciena", "WaveLogic 5"),
+]
+
+
+def _seed_default_router_models() -> None:
+    from app.models import RouterModel
+
+    db = SessionLocal()
+    try:
+        if db.query(RouterModel).first() is not None:
+            return
+        db.bulk_save_objects([RouterModel(vendor=vendor, model=model) for vendor, model in DEFAULT_ROUTER_MODELS])
+        db.commit()
+    finally:
+        db.close()

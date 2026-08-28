@@ -28,17 +28,37 @@ LOCATIONS = [
     ("Merida", "Mexico", 20.9674, -89.5926),
 ]
 
-CISCO_MODELS = [
-    "ASR1001-X",
-    "ASR1002-HX",
-    "ASR9001",
-    "ISR4451-X",
-    "ISR4331",
-    "ISR4321",
-    "Catalyst 8300-1N1S",
-    "Catalyst 8500L-8S4X",
-    "CRS-1000",
-    "NCS 5501",
+# (vendor, model) pairs to draw a primary's device from - a realistic
+# multi-vendor backbone mix, not a single-vendor fleet: Cisco IP/MPLS core
+# routers (ASR 9000/8000 series) alongside its ONS 15454 optical transport
+# platform, plus Arista routers and Ciena optical gear for vendor diversity.
+# Weighted by list length below, not explicitly - Cisco keeps the majority
+# share since that's still the common case for a backbone this size.
+VENDOR_DEVICES = [
+    ("Cisco", "ASR1001-X"),
+    ("Cisco", "ASR1002-HX"),
+    ("Cisco", "ASR9001"),
+    ("Cisco", "ASR9010"),
+    ("Cisco", "ASR9903"),
+    ("Cisco", "8201"),
+    ("Cisco", "8202"),
+    ("Cisco", "8712"),
+    ("Cisco", "ONS 15454"),
+    ("Cisco", "ISR4451-X"),
+    ("Cisco", "ISR4331"),
+    ("Cisco", "ISR4321"),
+    ("Cisco", "Catalyst 8300-1N1S"),
+    ("Cisco", "Catalyst 8500L-8S4X"),
+    ("Cisco", "CRS-1000"),
+    ("Cisco", "NCS 5501"),
+    ("Arista", "7280R3"),
+    ("Arista", "7280SR3"),
+    ("Arista", "7500R3"),
+    ("Arista", "7050X3"),
+    ("Ciena", "6500"),
+    ("Ciena", "5170"),
+    ("Ciena", "8180"),
+    ("Ciena", "WaveLogic 5"),
 ]
 
 
@@ -52,13 +72,14 @@ def build_routers() -> list[dict]:
         jitter_lat, jitter_lon = find_land_point(
             lat, lon, lambda: (random.uniform(-0.4, 0.4), random.uniform(-0.4, 0.4))
         )
+        vendor, model = random.choice(VENDOR_DEVICES)
         routers.append(
             {
                 "hostname": f"rtr-{slugify(city)}-{i + 1:03d}",
                 "mgmt_ip": f"10.10.{i // 250}.{(i % 250) + 1}",
                 "router_type": "primary",
-                "vendor": "Cisco",
-                "model": random.choice(CISCO_MODELS),
+                "vendor": vendor,
+                "model": model,
                 "site_name": f"{city} PoP",
                 "country": country,
                 "city": city,

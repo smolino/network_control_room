@@ -34,22 +34,36 @@ header.topbar h1 {
   white-space: nowrap;
 }
 
-nav.tabs {
+.app-body {
+  flex: 1;
   display: flex;
-  gap: 0.25rem;
+  overflow: hidden;
 }
 
-nav.tabs button {
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  width: 190px;
+  flex-shrink: 0;
+  background: #161c2c;
+  border-right: 1px solid #262f45;
+  padding: 0.75rem 0.6rem;
+  overflow-y: auto;
+}
+
+.sidebar button {
   background: transparent;
   border: none;
   color: #9aa4bf;
-  padding: 0.5rem 0.9rem;
+  padding: 0.55rem 0.75rem;
   border-radius: 6px;
   cursor: pointer;
   font-size: 0.9rem;
+  text-align: left;
 }
 
-nav.tabs button.active {
+.sidebar button.active {
   background: #262f45;
   color: #fff;
 }
@@ -318,6 +332,40 @@ tr:hover td {
   margin-bottom: 1.5rem;
 }
 
+.card-grid .card {
+  min-width: 0;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+  margin-top: 0.75rem;
+}
+
+.field-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: #9aa4bf;
+}
+
+.field-grid button[type="submit"] {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.form-success {
+  color: #4ade80;
+  background: #1b3d2b;
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.8rem;
+  grid-column: 1 / -1;
+}
+
 .card {
   background: #161c2c;
   border: 1px solid #262f45;
@@ -494,16 +542,26 @@ button:not(:disabled):hover {
     font-size: 0.95rem;
   }
 
-  /* Tabs and the stats strip each take their own full-width row below the
-     title (still in source order - just after it fits), and scroll
-     horizontally instead of wrapping button-by-button. */
-  nav.tabs {
-    flex: 1 1 100%;
+  /* The stats strip takes its own full-width row below the title (still in
+     source order - just after it fits), and scrolls horizontally instead of
+     wrapping span-by-span. The sidebar switches from a left column to a
+     full-width scrollable row above the page content - see .app-body/
+     .sidebar below. */
+  .app-body {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    flex-direction: row;
+    border-right: none;
+    border-bottom: 1px solid #262f45;
+    padding: 0.5rem 0.6rem;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
   }
 
-  nav.tabs button {
+  .sidebar button {
     flex-shrink: 0;
     white-space: nowrap;
     padding: 0.45rem 0.7rem;

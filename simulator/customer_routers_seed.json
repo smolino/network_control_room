@@ -659,8 +659,8 @@
     "site_name": "Leon region, site 1",
     "country": "Mexico",
     "city": "Leon",
-    "latitude": 22.2243,
-    "longitude": -101.1657
+    "latitude": 22.4498,
+    "longitude": -101.1887
   },
   {
     "hostname": "cust-leon-006-02",
@@ -672,8 +672,8 @@
     "site_name": "Leon region, site 2",
     "country": "Mexico",
     "city": "Leon",
-    "latitude": 21.7309,
-    "longitude": -101.7295
+    "latitude": 21.9564,
+    "longitude": -101.7533
   },
   {
     "hostname": "cust-leon-006-03",
@@ -685,8 +685,8 @@
     "site_name": "Leon region, site 3",
     "country": "Mexico",
     "city": "Leon",
-    "latitude": 20.6941,
-    "longitude": -101.2965
+    "latitude": 20.9196,
+    "longitude": -101.3197
   },
   {
     "hostname": "cust-leon-006-04",
@@ -698,8 +698,8 @@
     "site_name": "Leon region, site 4",
     "country": "Mexico",
     "city": "Leon",
-    "latitude": 20.9921,
-    "longitude": -102.6334
+    "latitude": 21.2176,
+    "longitude": -102.6585
   },
   {
     "hostname": "cust-leon-006-05",
@@ -711,8 +711,8 @@
     "site_name": "Leon region, site 5",
     "country": "Mexico",
     "city": "Leon",
-    "latitude": 19.9438,
-    "longitude": -100.1188
+    "latitude": 20.1693,
+    "longitude": -100.1401
   },
   {
     "hostname": "cust-leon-006-06",
@@ -724,8 +724,8 @@
     "site_name": "Leon region, site 6",
     "country": "Mexico",
     "city": "Leon",
-    "latitude": 22.0737,
-    "longitude": -102.8668
+    "latitude": 22.2992,
+    "longitude": -102.8923
   },
   {
     "hostname": "cust-leon-006-07",
@@ -737,8 +737,8 @@
     "site_name": "Leon region, site 7",
     "country": "Mexico",
     "city": "Leon",
-    "latitude": 22.1815,
-    "longitude": -103.1157
+    "latitude": 22.407,
+    "longitude": -103.1416
   },
   {
     "hostname": "cust-leon-006-08",
@@ -750,8 +750,8 @@
     "site_name": "Leon region, site 8",
     "country": "Mexico",
     "city": "Leon",
-    "latitude": 20.3257,
-    "longitude": -103.0074
+    "latitude": 20.5512,
+    "longitude": -103.0332
   },
   {
     "hostname": "cust-leon-006-09",
@@ -763,8 +763,8 @@
     "site_name": "Leon region, site 9",
     "country": "Mexico",
     "city": "Leon",
-    "latitude": 20.527,
-    "longitude": -102.1928
+    "latitude": 20.7525,
+    "longitude": -102.2173
   },
   {
     "hostname": "cust-leon-006-10",
@@ -776,8 +776,8 @@
     "site_name": "Leon region, site 10",
     "country": "Mexico",
     "city": "Leon",
-    "latitude": 21.9322,
-    "longitude": -100.8971
+    "latitude": 22.1577,
+    "longitude": -100.9196
   },
   {
     "hostname": "cust-ciudad-juarez-007-01",
@@ -789,8 +789,8 @@
     "site_name": "Ciudad Juarez region, site 1",
     "country": "Mexico",
     "city": "Ciudad Juarez",
-    "latitude": 31.7441,
-    "longitude": -108.4764
+    "latitude": 31.568,
+    "longitude": -107.8309
   },
   {
     "hostname": "cust-ciudad-juarez-007-02",
@@ -802,8 +802,8 @@
     "site_name": "Ciudad Juarez region, site 2",
     "country": "Mexico",
     "city": "Ciudad Juarez",
-    "latitude": 31.4097,
-    "longitude": -108.5199
+    "latitude": 31.2336,
+    "longitude": -107.8743
   },
   {
     "hostname": "cust-ciudad-juarez-007-03",
@@ -815,8 +815,8 @@
     "site_name": "Ciudad Juarez region, site 3",
     "country": "Mexico",
     "city": "Ciudad Juarez",
-    "latitude": 32.3076,
-    "longitude": -107.5216
+    "latitude": 32.1315,
+    "longitude": -106.878
   },
   {
     "hostname": "cust-ciudad-juarez-007-04",
@@ -828,8 +828,8 @@
     "site_name": "Ciudad Juarez region, site 4",
     "country": "Mexico",
     "city": "Ciudad Juarez",
-    "latitude": 33.662,
-    "longitude": -106.4345
+    "latitude": 33.4859,
+    "longitude": -105.793
   },
   {
     "hostname": "cust-ciudad-juarez-007-05",
@@ -841,8 +841,8 @@
     "site_name": "Ciudad Juarez region, site 5",
     "country": "Mexico",
     "city": "Ciudad Juarez",
-    "latitude": 34.1208,
-    "longitude": -106.4567
+    "latitude": 33.9447,
+    "longitude": -105.8151
   },
   {
     "hostname": "cust-ciudad-juarez-007-06",
@@ -854,8 +854,8 @@
     "site_name": "Ciudad Juarez region, site 6",
     "country": "Mexico",
     "city": "Ciudad Juarez",
-    "latitude": 30.1647,
-    "longitude": -106.7832
+    "latitude": 29.9886,
+    "longitude": -106.141
   },
   {
     "hostname": "cust-ciudad-juarez-007-07",
@@ -867,8 +867,8 @@
     "site_name": "Ciudad Juarez region, site 7",
     "country": "Mexico",
     "city": "Ciudad Juarez",
-    "latitude": 31.9247,
-    "longitude": -106.3954
+    "latitude": 31.7486,
+    "longitude": -105.7539
   },
   {
     "hostname": "cust-ciudad-juarez-007-08",
@@ -880,8 +880,8 @@
     "site_name": "Ciudad Juarez region, site 8",
     "country": "Mexico",
     "city": "Ciudad Juarez",
-    "latitude": 33.0381,
-    "longitude": -105.186
+    "latitude": 32.862,
+    "longitude": -104.5468
   },
   {
     "hostname": "cust-ciudad-juarez-007-09",
@@ -893,8 +893,8 @@
     "site_name": "Ciudad Juarez region, site 9",
     "country": "Mexico",
     "city": "Ciudad Juarez",
-    "latitude": 32.9759,
-    "longitude": -104.6073
+    "latitude": 32.7998,
+    "longitude": -103.9692
   },
   {
     "hostname": "cust-ciudad-juarez-007-10",
@@ -906,8 +906,8 @@
     "site_name": "Ciudad Juarez region, site 10",
     "country": "Mexico",
     "city": "Ciudad Juarez",
-    "latitude": 33.3882,
-    "longitude": -107.6195
+    "latitude": 33.2121,
+    "longitude": -106.9757
   },
   {
     "hostname": "cust-cancun-008-01",
@@ -919,8 +919,8 @@
     "site_name": "Cancun region, site 1",
     "country": "Mexico",
     "city": "Cancun",
-    "latitude": 20.2053,
-    "longitude": -87.6682
+    "latitude": 20.2538,
+    "longitude": -87.8129
   },
   {
     "hostname": "cust-cancun-008-02",
@@ -932,8 +932,8 @@
     "site_name": "Cancun region, site 2",
     "country": "Mexico",
     "city": "Cancun",
-    "latitude": 20.8852,
-    "longitude": -89.151
+    "latitude": 20.9337,
+    "longitude": -89.2962
   },
   {
     "hostname": "cust-cancun-008-03",
@@ -945,8 +945,8 @@
     "site_name": "Cancun region, site 3",
     "country": "Mexico",
     "city": "Cancun",
-    "latitude": 20.1714,
-    "longitude": -87.5652
+    "latitude": 20.2199,
+    "longitude": -87.7099
   },
   {
     "hostname": "cust-cancun-008-04",
@@ -958,8 +958,8 @@
     "site_name": "Cancun region, site 4",
     "country": "Mexico",
     "city": "Cancun",
-    "latitude": 20.8947,
-    "longitude": -86.846
+    "latitude": 20.9432,
+    "longitude": -86.9905
   },
   {
     "hostname": "cust-cancun-008-05",
@@ -971,8 +971,8 @@
     "site_name": "Cancun region, site 5",
     "country": "Mexico",
     "city": "Cancun",
-    "latitude": 20.1814,
-    "longitude": -88.7795
+    "latitude": 20.2299,
+    "longitude": -88.9246
   },
   {
     "hostname": "cust-cancun-008-06",
@@ -984,8 +984,8 @@
     "site_name": "Cancun region, site 6",
     "country": "Mexico",
     "city": "Cancun",
-    "latitude": 20.9066,
-    "longitude": -87.9968
+    "latitude": 20.9551,
+    "longitude": -88.1416
   },
   {
     "hostname": "cust-cancun-008-07",
@@ -993,12 +993,12 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.8",
     "vendor": "Cisco",
-    "model": "ISR1100-4G",
+    "model": "Catalyst 1300",
     "site_name": "Cancun region, site 7",
     "country": "Mexico",
     "city": "Cancun",
-    "latitude": 21.373,
-    "longitude": -88.7576
+    "latitude": 20.532,
+    "longitude": -89.2586
   },
   {
     "hostname": "cust-cancun-008-08",
@@ -1010,8 +1010,8 @@
     "site_name": "Cancun region, site 8",
     "country": "Mexico",
     "city": "Cancun",
-    "latitude": 21.3761,
-    "longitude": -88.5115
+    "latitude": 21.0272,
+    "longitude": -89.3129
   },
   {
     "hostname": "cust-cancun-008-09",
@@ -1019,12 +1019,12 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.8",
     "vendor": "Cisco",
-    "model": "Catalyst 1300",
+    "model": "ISR1101",
     "site_name": "Cancun region, site 9",
     "country": "Mexico",
     "city": "Cancun",
-    "latitude": 19.8054,
-    "longitude": -88.6169
+    "latitude": 19.7193,
+    "longitude": -88.0825
   },
   {
     "hostname": "cust-cancun-008-10",
@@ -1032,12 +1032,12 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.8",
     "vendor": "Cisco",
-    "model": "Catalyst 1300",
+    "model": "RV340",
     "site_name": "Cancun region, site 10",
     "country": "Mexico",
     "city": "Cancun",
-    "latitude": 20.4835,
-    "longitude": -89.1134
+    "latitude": 20.3241,
+    "longitude": -89.2046
   },
   {
     "hostname": "cust-merida-009-01",
@@ -1045,12 +1045,12 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.9",
     "vendor": "Cisco",
-    "model": "ISR1100-4G",
+    "model": "RV340",
     "site_name": "Merida region, site 1",
     "country": "Mexico",
     "city": "Merida",
-    "latitude": 18.547,
-    "longitude": -89.2724
+    "latitude": 21.3791,
+    "longitude": -87.7187
   },
   {
     "hostname": "cust-merida-009-02",
@@ -1058,12 +1058,12 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.9",
     "vendor": "Cisco",
-    "model": "RV340",
+    "model": "ISR1101",
     "site_name": "Merida region, site 2",
     "country": "Mexico",
     "city": "Merida",
-    "latitude": 18.822,
-    "longitude": -90.1755
+    "latitude": 19.1454,
+    "longitude": -90.1463
   },
   {
     "hostname": "cust-merida-009-03",
@@ -1071,12 +1071,12 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.9",
     "vendor": "Cisco",
-    "model": "RV340",
+    "model": "ISR1100-4G",
     "site_name": "Merida region, site 3",
     "country": "Mexico",
     "city": "Merida",
-    "latitude": 20.2079,
-    "longitude": -87.9892
+    "latitude": 20.1589,
+    "longitude": -89.4129
   },
   {
     "hostname": "cust-merida-009-04",
@@ -1084,12 +1084,12 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.9",
     "vendor": "Cisco",
-    "model": "RV340",
+    "model": "ISR1100-4G",
     "site_name": "Merida region, site 4",
     "country": "Mexico",
     "city": "Merida",
-    "latitude": 21.2792,
-    "longitude": -87.2338
+    "latitude": 20.4764,
+    "longitude": -90.1706
   },
   {
     "hostname": "cust-merida-009-05",
@@ -1097,12 +1097,12 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.9",
     "vendor": "Cisco",
-    "model": "ISR1101",
+    "model": "RV340",
     "site_name": "Merida region, site 5",
     "country": "Mexico",
     "city": "Merida",
-    "latitude": 19.0455,
-    "longitude": -89.6597
+    "latitude": 19.4061,
+    "longitude": -90.0231
   },
   {
     "hostname": "cust-merida-009-06",
@@ -1110,12 +1110,12 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.9",
     "vendor": "Cisco",
-    "model": "ISR1100-4G",
+    "model": "Catalyst 1300",
     "site_name": "Merida region, site 6",
     "country": "Mexico",
     "city": "Merida",
-    "latitude": 20.059,
-    "longitude": -88.9268
+    "latitude": 18.7486,
+    "longitude": -89.2778
   },
   {
     "hostname": "cust-merida-009-07",
@@ -1123,12 +1123,12 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.9",
     "vendor": "Cisco",
-    "model": "ISR1100-4G",
+    "model": "ISR1101",
     "site_name": "Merida region, site 7",
     "country": "Mexico",
     "city": "Merida",
-    "latitude": 20.3765,
-    "longitude": -89.684
+    "latitude": 20.6515,
+    "longitude": -88.2094
   },
   {
     "hostname": "cust-merida-009-08",
@@ -1136,12 +1136,12 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.9",
     "vendor": "Cisco",
-    "model": "RV340",
+    "model": "Catalyst 1300",
     "site_name": "Merida region, site 8",
     "country": "Mexico",
     "city": "Merida",
-    "latitude": 19.3062,
-    "longitude": -89.5366
+    "latitude": 19.6969,
+    "longitude": -87.9329
   },
   {
     "hostname": "cust-merida-009-09",
@@ -1149,12 +1149,12 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.9",
     "vendor": "Cisco",
-    "model": "ISR1101",
+    "model": "Catalyst 1300",
     "site_name": "Merida region, site 9",
     "country": "Mexico",
     "city": "Merida",
-    "latitude": 21.2688,
-    "longitude": -88.8374
+    "latitude": 20.0643,
+    "longitude": -89.9995
   },
   {
     "hostname": "cust-merida-009-10",
@@ -1162,11 +1162,11 @@
     "router_type": "customer",
     "parent_mgmt_ip": "10.10.0.9",
     "vendor": "Cisco",
-    "model": "Catalyst 1300",
+    "model": "C1111-8P",
     "site_name": "Merida region, site 10",
     "country": "Mexico",
     "city": "Merida",
-    "latitude": 18.8514,
-    "longitude": -88.1666
+    "latitude": 21.1063,
+    "longitude": -87.8846
   }
 ]

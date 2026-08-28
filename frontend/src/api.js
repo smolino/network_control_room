@@ -40,6 +40,12 @@ export function fetchRouter(id) {
   return getJSON(`/routers/${id}`);
 }
 
+// Also removes any BGP peering (and its interface bundles) this router was
+// a side of - see backend/app/api/routers.py:delete_router.
+export function deleteRouter(id) {
+  return deleteJSON(`/routers/${id}`);
+}
+
 export function fetchRouterTraps(id, limit = 100) {
   return getJSON(`/routers/${id}/traps?limit=${limit}`);
 }
@@ -85,6 +91,36 @@ export function resolveAllOpenIncidents() {
 
 export function fetchBgpPeerings() {
   return getJSON("/bgp/peerings");
+}
+
+// Bulk idempotent upsert - same endpoints the trap simulator seeds the fleet
+// with on startup (see backend/app/api/routers.py, api/bgp.py). Adding a
+// router whose mgmt_ip already exists is a no-op; adding a peering that
+// already exists updates its distance/repeater_count in place.
+//
+// send_boot_trap=true (the UI's default, unlike the simulator's own startup
+// seed) makes the backend publish a synthetic coldStart for each router
+// actually created here - without it, a manually- or bulk-added router
+// sits at status "unknown" forever, since that's the only trap that ever
+// flips it and the simulator only ever sends one, at its own startup, for
+// whichever routers it knew about then.
+export function seedRouters(routers, { sendBootTrap = true } = {}) {
+  return postJSON(`/routers/seed${sendBootTrap ? "?send_boot_trap=true" : ""}`, routers);
+}
+
+export function seedBgpPeerings(pairs) {
+  return postJSON("/bgp/seed", pairs);
+}
+
+// Vendor/model catalog backing Add Fleet's Vendor/Model dropdowns - see
+// backend/app/api/router_models.py. Not linked to Router.vendor/model by
+// FK, so this is purely a curated list of choices, not a validation source.
+export function fetchRouterModels() {
+  return getJSON("/router-models");
+}
+
+export function createRouterModel({ vendor, model }) {
+  return postJSON("/router-models", { vendor, model });
 }
 
 export function fetchIncidentAnalysis(id) {

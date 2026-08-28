@@ -251,6 +251,21 @@ class RemediationAction(Base):
     backup = relationship("RouterConfigBackup")
 
 
+class RouterModel(Base):
+    """Catalog of selectable (vendor, model) pairs backing the Add Fleet
+    form's Vendor/Model dropdowns - a UI convenience list only, not linked
+    to Router.vendor/model by FK, so CSV bulk upload, the seed API, and the
+    trap simulator's own seed data are never constrained to it."""
+
+    __tablename__ = "router_models"
+    __table_args__ = (UniqueConstraint("vendor", "model", name="uq_router_model_vendor_model"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    vendor = Column(String(64), nullable=False, index=True)
+    model = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class Team(Base):
     """A maintenance or SOC team an operator can hand an open incident off
     to for human review, along with the email address it should be
