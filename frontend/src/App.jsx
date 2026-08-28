@@ -3,6 +3,7 @@ import { connectEvents, fetchBgpPeerings, fetchIncidents, fetchRouters, fetchSta
 import MapView from "./components/MapView.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import RouterList from "./components/RouterList.jsx";
+import AddFleet from "./components/AddFleet.jsx";
 import IncidentList from "./components/IncidentList.jsx";
 import RouterDetail from "./components/RouterDetail.jsx";
 import HumanReview from "./components/HumanReview.jsx";
@@ -15,6 +16,7 @@ const TABS = [
   { key: "map", label: "Map" },
   { key: "dashboard", label: "Dashboard" },
   { key: "routers", label: "Routers" },
+  { key: "add-fleet", label: "Add Fleet" },
   { key: "incidents", label: "Incidents" },
   { key: "customer-incidents", label: "Customer Incidents" },
   { key: "human-review", label: "Human Review" },
@@ -210,17 +212,6 @@ export default function App() {
     <>
       <header className="topbar">
         <h1>Network Control Room</h1>
-        <nav className="tabs">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              className={view === t.key ? "active" : ""}
-              onClick={() => setView(t.key)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
         {stats && (
           <div className="stats-strip">
             <span><strong>{stats.total_routers}</strong> primaries</span>
@@ -261,57 +252,76 @@ export default function App() {
           onClose={() => setShowSettings(false)}
         />
       )}
-      <main>
-        {view === "map" && (
-          <MapView
-            routers={routers}
-            peerings={peerings}
-            onSelectRouter={(id) => {
-              setSelectedRouterId(id);
-              setView("routers");
-            }}
-          />
-        )}
-        {view === "dashboard" && <Dashboard stats={stats} incidents={incidents} />}
-        {view === "routers" && (
-          <RouterList
-            routers={routers}
-            selectedRouterId={selectedRouterId}
-            onSelectRouter={setSelectedRouterId}
-          />
-        )}
-        {view === "incidents" && (
-          <IncidentList
-            incidents={incidents}
-            routers={routers}
-            onSelectRouter={(id) => {
-              setSelectedRouterId(id);
-              setView("routers");
-            }}
-          />
-        )}
-        {view === "customer-incidents" && (
-          <IncidentList
-            incidents={customerIncidents}
-            routers={routers}
-            onSelectRouter={(id) => {
-              setSelectedRouterId(id);
-              setView("routers");
-            }}
-          />
-        )}
-        {view === "human-review" && (
-          <HumanReview
-            incidents={[...incidents, ...customerIncidents]}
-            routers={routers}
-            teams={teams}
-            onSelectRouter={(id) => {
-              setSelectedRouterId(id);
-              setView("routers");
-            }}
-          />
-        )}
-      </main>
+      <div className="app-body">
+        <nav className="sidebar">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              className={view === t.key ? "active" : ""}
+              onClick={() => setView(t.key)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+        <main>
+          {view === "map" && (
+            <MapView
+              routers={routers}
+              peerings={peerings}
+              onFleetChanged={reloadAll}
+              onSelectRouter={(id) => {
+                setSelectedRouterId(id);
+                setView("routers");
+              }}
+            />
+          )}
+          {view === "dashboard" && <Dashboard stats={stats} incidents={incidents} />}
+          {view === "routers" && (
+            <RouterList
+              routers={routers}
+              selectedRouterId={selectedRouterId}
+              onSelectRouter={setSelectedRouterId}
+              onRouterDeleted={async (id) => {
+                if (id === selectedRouterId) setSelectedRouterId(null);
+                await reloadAll();
+              }}
+            />
+          )}
+          {view === "add-fleet" && <AddFleet routers={routers} onFleetChanged={reloadAll} />}
+          {view === "incidents" && (
+            <IncidentList
+              incidents={incidents}
+              routers={routers}
+              onSelectRouter={(id) => {
+                setSelectedRouterId(id);
+                setView("routers");
+              }}
+            />
+          )}
+          {view === "customer-incidents" && (
+            <IncidentList
+              incidents={customerIncidents}
+              routers={routers}
+              onSelectRouter={(id) => {
+                setSelectedRouterId(id);
+                setView("routers");
+              }}
+            />
+          )}
+          {view === "human-review" && (
+            <HumanReview
+              incidents={[...incidents, ...customerIncidents]}
+              routers={routers}
+              teams={teams}
+              onSelectRouter={(id) => {
+                setSelectedRouterId(id);
+                setView("routers");
+              }}
+            />
+          )}
+        </main>
+      </div>
       {view === "routers" && selectedRouter && (
         <RouterDetail
           router={selectedRouter}

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import L from "leaflet";
 import { CircleMarker, MapContainer, Polyline, Popup, TileLayer } from "react-leaflet";
+import { seedBgpPeerings } from "../api.js";
+import { haversineKm, REPEATER_SPACING_KM } from "../geo.js";
 
 // Marker fill colors - kept vivid so routers pop against any tile background.
 const STATUS_COLOR = {
@@ -42,6 +44,12 @@ const BGP_COLOR = {
 const REROUTE_COLOR = "#a855f7";
 const REROUTE_DASH = "10 8";
 const REROUTE_DASH_LENGTH = 18; // sum of REROUTE_DASH - keeps the offset wrap seamless
+
+// Ring color for a primary picked as an endpoint while "Link BGP routers"
+// mode is active - same purple family as REROUTE_COLOR (both mean "you're
+// mid-interaction with this link"), just its own constant since the two
+// concepts are otherwise unrelated.
+const LINK_SELECT_COLOR = "#a855f7";
 
 const MARKER_STROKE = "#0b0f1a";
 const ALERT_STROKE = "#f97316";
@@ -113,7 +121,18 @@ function repeaterPositions(a, b, count) {
   return points;
 }
 
-function RouterMarker({ r, radius, fillOpacity, blinkOn, onSelectRouter, parentHostname, symptomatic }) {
+function RouterMarker({
+  r,
+  radius,
+  fillOpacity,
+  blinkOn,
+  onSelectRouter,
+  parentHostname,
+  symptomatic,
+  linkMode = false,
+  linkSelected = false,
+  onLinkClick,
+}) {
   // Customer CPE is single-homed, so a down/flapping status IS the outage -
   // there's no separate peering line to carry that signal the way a
   // primary's BGP mesh does, so the marker itself blinks to flag it.
@@ -127,53 +146,65 @@ function RouterMarker({ r, radius, fillOpacity, blinkOn, onSelectRouter, parentH
   return (
     <CircleMarker
       center={[r.latitude, r.longitude]}
-      radius={r.status === "flapping" || alerting ? radius + 3 : radius}
+      radius={r.status === "flapping" || alerting || linkSelected ? radius + 3 : radius}
+      eventHandlers={linkMode ? { click: () => onLinkClick?.(r) } : undefined}
       pathOptions={{
-        color: r.needs_attention ? ALERT_STROKE : showSymptomaticRing ? SYMPTOMATIC_STROKE : MARKER_STROKE,
-        weight: alerting ? 3 : showSymptomaticRing ? 2 : 1.25,
-        dashArray: showSymptomaticRing ? "3 3" : undefined,
+        color: linkSelected
+          ? LINK_SELECT_COLOR
+          : r.needs_attention
+            ? ALERT_STROKE
+            : showSymptomaticRing
+              ? SYMPTOMATIC_STROKE
+              : MARKER_STROKE,
+        weight: linkSelected ? 3 : alerting ? 3 : showSymptomaticRing ? 2 : 1.25,
+        dashArray: showSymptomaticRing && !linkSelected ? "3 3" : undefined,
         fillColor: statusColor[r.status] || statusColor.unknown,
         fillOpacity: shouldBlink ? (blinkOn ? 1 : 0.35) : fillOpacity,
       }}
     >
-      <Popup>
-        <div style={{ fontSize: "0.85rem" }}>
-          <strong>{r.hostname}</strong>
-          <div>{r.site_name} — {r.city}, {r.country}</div>
-          <div>{r.mgmt_ip} · {r.model}</div>
-          {r.asn && <div>AS{r.asn}</div>}
-          <div>{r.router_type === "primary" ? "Primary (backbone)" : "Customer CPE"}</div>
-          {parentHostname && <div>Uplink to: {parentHostname}</div>}
-          <div>
-            status: <span className={`badge ${r.status}`}>{r.status}</span>
+      {/* linkMode is only ever passed for primaries (see the primaries.map
+          call below) - clicking one there selects it for a BGP link instead
+          of opening this popup, so it's suppressed while that's active. */}
+      {!linkMode && (
+        <Popup>
+          <div style={{ fontSize: "0.85rem" }}>
+            <strong>{r.hostname}</strong>
+            <div>{r.site_name} — {r.city}, {r.country}</div>
+            <div>{r.mgmt_ip} · {r.model}</div>
+            {r.asn && <div>AS{r.asn}</div>}
+            <div>{r.router_type === "primary" ? "Primary (backbone)" : "Customer CPE"}</div>
+            {parentHostname && <div>Uplink to: {parentHostname}</div>}
+            <div>
+              status: <span className={`badge ${r.status}`}>{r.status}</span>
+            </div>
+            {r.needs_attention && (
+              <div style={{ color: ALERT_STROKE, fontWeight: 600, marginTop: "0.25rem" }}>
+                ⚠ auto-heal failed — needs attention
+              </div>
+            )}
+            {connectionIssue && !r.needs_attention && (
+              <div style={{ color: STATUS_COLOR[r.status], fontWeight: 600, marginTop: "0.25rem" }}>
+                ⚠ connection issue
+              </div>
+            )}
+            {showSymptomaticRing && (
+              <div style={{ color: SYMPTOMATIC_STROKE, fontWeight: 600, marginTop: "0.25rem" }}>
+                ↳ symptomatic of a fiber fault on this link (L1 root cause)
+              </div>
+            )}
+            <div style={{ marginTop: "0.4rem" }}>
+              <span className="link" onClick={() => onSelectRouter(r.id)}>
+                View details →
+              </span>
+            </div>
           </div>
-          {r.needs_attention && (
-            <div style={{ color: ALERT_STROKE, fontWeight: 600, marginTop: "0.25rem" }}>
-              ⚠ auto-heal failed — needs attention
-            </div>
-          )}
-          {connectionIssue && !r.needs_attention && (
-            <div style={{ color: STATUS_COLOR[r.status], fontWeight: 600, marginTop: "0.25rem" }}>
-              ⚠ connection issue
-            </div>
-          )}
-          {showSymptomaticRing && (
-            <div style={{ color: SYMPTOMATIC_STROKE, fontWeight: 600, marginTop: "0.25rem" }}>
-              ↳ symptomatic of a fiber fault on this link (L1 root cause)
-            </div>
-          )}
-          <div style={{ marginTop: "0.4rem" }}>
-            <span className="link" onClick={() => onSelectRouter(r.id)}>
-              View details →
-            </span>
-          </div>
-        </div>
-      </Popup>
+        </Popup>
+      )}
     </CircleMarker>
   );
 }
 
-export default function MapView({ routers, peerings = [], onSelectRouter }) {
+export default function MapView({ routers, peerings = [], onSelectRouter, onFleetChanged }) {
   // Top-level L1/L3 layer toggles (§7.2 of the design doc this map is
   // modeled on) - L1 is the physical fiber plane (repeater dots + fault
   // segment), L3 is the logical/control-plane plane (routers, BGP/customer
@@ -187,6 +218,19 @@ export default function MapView({ routers, peerings = [], onSelectRouter }) {
   const [showReroutes, setShowReroutes] = useState(true);
   const [blinkOn, setBlinkOn] = useState(true);
   const [dashOffset, setDashOffset] = useState(0);
+
+  // Click-to-link BGP flow: while active, clicking a primary marker adds/
+  // removes it from linkSelection (up to 2) instead of opening its popup -
+  // see RouterMarker/handleMarkerLinkClick below.
+  const [linkMode, setLinkMode] = useState(false);
+  const [linkSelection, setLinkSelection] = useState([]);
+  const [linkDistance, setLinkDistance] = useState("");
+  const [linkRepeaters, setLinkRepeaters] = useState("");
+  const [linkDistanceTouched, setLinkDistanceTouched] = useState(false);
+  const [linkRepeatersTouched, setLinkRepeatersTouched] = useState(false);
+  const [linking, setLinking] = useState(false);
+  const [linkStatus, setLinkStatus] = useState(null);
+
   const routerById = useMemo(() => Object.fromEntries(routers.map((r) => [r.id, r])), [routers]);
   // Leaflet's canvas renderer (used everywhere else via preferCanvas, for
   // performance across ~2500 markers/lines) never applies the dashOffset
@@ -241,6 +285,75 @@ export default function MapView({ routers, peerings = [], onSelectRouter }) {
     () => peerings.reduce((sum, p) => sum + (p.repeater_count || 0), 0),
     [peerings]
   );
+
+  const linkRouterA = linkSelection[0] != null ? routerById[linkSelection[0]] : null;
+  const linkRouterB = linkSelection[1] != null ? routerById[linkSelection[1]] : null;
+
+  const existingLinkPeering = useMemo(() => {
+    if (!linkRouterA || !linkRouterB) return null;
+    return peerings.find(
+      (p) =>
+        (p.router_a_id === linkRouterA.id && p.router_b_id === linkRouterB.id) ||
+        (p.router_a_id === linkRouterB.id && p.router_b_id === linkRouterA.id)
+    );
+  }, [peerings, linkRouterA, linkRouterB]);
+
+  const resetLinkSelection = () => {
+    setLinkSelection([]);
+    setLinkDistance("");
+    setLinkRepeaters("");
+    setLinkDistanceTouched(false);
+    setLinkRepeatersTouched(false);
+    setLinkStatus(null);
+  };
+
+  const toggleLinkMode = (checked) => {
+    setLinkMode(checked);
+    resetLinkSelection();
+    if (checked && !showL3) setShowL3(true);
+  };
+
+  const handleMarkerLinkClick = (router) => {
+    setLinkStatus(null);
+    setLinkSelection((prev) => {
+      if (prev.includes(router.id)) return prev.filter((id) => id !== router.id);
+      if (prev.length >= 2) return [router.id];
+      return [...prev, router.id];
+    });
+  };
+
+  const confirmLink = async () => {
+    if (!linkRouterA || !linkRouterB) return;
+    setLinking(true);
+    setLinkStatus(null);
+    try {
+      await seedBgpPeerings([
+        {
+          router_a_mgmt_ip: linkRouterA.mgmt_ip,
+          router_b_mgmt_ip: linkRouterB.mgmt_ip,
+          distance_km: Number(linkDistance) || 0,
+          repeater_count: Number(linkRepeaters) || 0,
+        },
+      ]);
+      await onFleetChanged?.();
+      resetLinkSelection();
+    } catch (err) {
+      setLinkStatus({ type: "error", text: `Couldn't create the link: ${err.message}` });
+    } finally {
+      setLinking(false);
+    }
+  };
+
+  // Auto-fills from the two sites' coordinates whenever the selection
+  // changes, but only for whichever field the operator hasn't manually
+  // overridden yet - same pattern as AddFleet's AddPeeringForm.
+  useEffect(() => {
+    if (!linkRouterA || !linkRouterB) return;
+    const km = haversineKm(linkRouterA.latitude, linkRouterA.longitude, linkRouterB.latitude, linkRouterB.longitude);
+    if (!linkDistanceTouched) setLinkDistance(km.toFixed(1));
+    if (!linkRepeatersTouched) setLinkRepeaters(String(Math.floor(km / REPEATER_SPACING_KM)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkSelection]);
 
   useEffect(() => {
     if (!anyBlinking) return undefined;
@@ -317,7 +430,101 @@ export default function MapView({ routers, peerings = [], onSelectRouter }) {
           />
           Show reroutes ({activeReroutes.length})
         </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "0.4rem",
+            cursor: "pointer",
+            borderTop: "1px solid #262f45",
+            paddingTop: "0.3rem",
+            marginTop: "0.1rem",
+          }}
+        >
+          <input type="checkbox" checked={linkMode} onChange={(e) => toggleLinkMode(e.target.checked)} />
+          🔗 Link BGP routers
+        </label>
+        {linkMode && (
+          <div style={{ fontSize: "0.72rem", color: "#9aa4bf" }}>
+            Click two primary routers to connect them.
+          </div>
+        )}
       </div>
+
+      {linkMode && linkRouterA && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 12,
+            left: 50,
+            zIndex: 1000,
+            background: "#161c2cdd",
+            border: "1px solid #262f45",
+            borderRadius: 8,
+            padding: "0.6rem 0.8rem",
+            fontSize: "0.8rem",
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.4rem",
+            maxWidth: 260,
+          }}
+        >
+          <div>
+            <strong>{linkRouterA.hostname}</strong>
+            {linkRouterB ? (
+              <>
+                {" "}
+                ↔ <strong>{linkRouterB.hostname}</strong>
+              </>
+            ) : (
+              " — select a second primary router"
+            )}
+          </div>
+          {linkRouterB && (
+            <>
+              {existingLinkPeering && (
+                <div style={{ color: "#facc15" }}>
+                  Already linked — this will update its distance/repeater count.
+                </div>
+              )}
+              <label style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+                Distance (km)
+                <input
+                  value={linkDistance}
+                  onChange={(e) => {
+                    setLinkDistanceTouched(true);
+                    setLinkDistance(e.target.value);
+                  }}
+                />
+              </label>
+              <label style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+                Repeater count
+                <input
+                  value={linkRepeaters}
+                  onChange={(e) => {
+                    setLinkRepeatersTouched(true);
+                    setLinkRepeaters(e.target.value);
+                  }}
+                />
+              </label>
+              {linkStatus && <div className="login-error">{linkStatus.text}</div>}
+              <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
+                <button type="button" onClick={resetLinkSelection}>
+                  Cancel
+                </button>
+                <button type="button" className="login-submit" onClick={confirmLink} disabled={linking}>
+                  {linking ? "Linking…" : "Create BGP link"}
+                </button>
+              </div>
+            </>
+          )}
+          {!linkRouterB && (
+            <button type="button" onClick={resetLinkSelection}>
+              Cancel
+            </button>
+          )}
+        </div>
+      )}
 
       <MapContainer
         center={[20, 10]}
@@ -477,6 +684,9 @@ export default function MapView({ routers, peerings = [], onSelectRouter }) {
               blinkOn={blinkOn}
               onSelectRouter={onSelectRouter}
               symptomatic={symptomaticRouterIds.has(r.id)}
+              linkMode={linkMode}
+              linkSelected={linkSelection.includes(r.id)}
+              onLinkClick={handleMarkerLinkClick}
             />
           ))}
       </MapContainer>

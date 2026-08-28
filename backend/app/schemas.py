@@ -203,6 +203,19 @@ class BgpPeeringOut(BaseModel):
     bundle_b: InterfaceBundleOut | None = None
 
 
+class RouterModelIn(BaseModel):
+    vendor: str
+    model: str
+
+
+class RouterModelOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    vendor: str
+    model: str
+
+
 class TeamIn(BaseModel):
     kind: TeamKind
     name: str
