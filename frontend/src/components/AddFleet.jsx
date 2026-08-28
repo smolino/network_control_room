@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createRouterModel, fetchRouterModels, seedBgpPeerings, seedRouters } from "../api.js";
+import { createRouterModel, fetchRouterModels, seedBgpPeerings, seedRouters, updateRouterModel } from "../api.js";
 import { CITIES, CITY_BY_NAME } from "../cities.js";
 import { downloadTextFile, parseCSV, toCSV } from "../csv.js";
 import { haversineKm, REPEATER_SPACING_KM } from "../geo.js";
@@ -137,13 +137,16 @@ function RouterModelsCatalog({ models, onModelsChanged }) {
   const [status, setStatus] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  const grouped = useMemo(() => {
-    const byVendor = {};
-    for (const m of models) {
-      (byVendor[m.vendor] ||= []).push(m.model);
-    }
-    return Object.entries(byVendor).sort(([a], [b]) => a.localeCompare(b));
-  }, [models]);
+  const [editingId, setEditingId] = useState(null);
+  const [editVendor, setEditVendor] = useState("");
+  const [editModel, setEditModel] = useState("");
+  const [editStatus, setEditStatus] = useState(null);
+  const [editSaving, setEditSaving] = useState(false);
+
+  const sorted = useMemo(
+    () => [...models].sort((a, b) => a.vendor.localeCompare(b.vendor) || a.model.localeCompare(b.model)),
+    [models]
+  );
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -168,12 +171,42 @@ function RouterModelsCatalog({ models, onModelsChanged }) {
     }
   };
 
+  const startEdit = (entry) => {
+    setEditingId(entry.id);
+    setEditVendor(entry.vendor);
+    setEditModel(entry.model);
+    setEditStatus(null);
+  };
+
+  const cancelEdit = () => setEditingId(null);
+
+  const saveEdit = async (entry) => {
+    const v = editVendor.trim();
+    const m = editModel.trim();
+    if (!v || !m) {
+      setEditStatus({ type: "error", text: "Vendor and model are both required." });
+      return;
+    }
+    setEditSaving(true);
+    try {
+      await updateRouterModel(entry.id, { vendor: v, model: m });
+      setEditingId(null);
+      await onModelsChanged();
+    } catch (err) {
+      setEditStatus({ type: "error", text: `Couldn't save: ${err.message}` });
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   return (
     <div className="card">
       <h3>Router models</h3>
       <p className="settings-hint">
-        Vendor/model pairs available in the dropdowns on this page. Add one that's missing —
-        it's ready to select immediately, no reload needed.
+        Vendor/model pairs available in the dropdowns on this page. Add one that's missing, or
+        edit an existing one — changes are ready to select immediately, no reload needed. Editing
+        a pair only changes the catalog entry itself; routers already added with the old
+        vendor/model keep what they were saved with.
       </p>
       <form onSubmit={handleSubmit} className="field-grid">
         <label>
@@ -189,24 +222,50 @@ function RouterModelsCatalog({ models, onModelsChanged }) {
           {saving ? "Adding…" : "Add model"}
         </button>
       </form>
+      <StatusBanner status={editStatus} />
       <div className="table-scroll" style={{ marginTop: "1rem" }}>
         <table>
           <thead>
             <tr>
               <th>Vendor</th>
-              <th>Models</th>
+              <th>Model</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            {grouped.map(([v, list]) => (
-              <tr key={v}>
-                <td>{v}</td>
-                <td>{list.join(", ")}</td>
-              </tr>
-            ))}
-            {grouped.length === 0 && (
+            {sorted.map((entry) =>
+              editingId === entry.id ? (
+                <tr key={entry.id}>
+                  <td>
+                    <input value={editVendor} onChange={(e) => setEditVendor(e.target.value)} />
+                  </td>
+                  <td>
+                    <input value={editModel} onChange={(e) => setEditModel(e.target.value)} />
+                  </td>
+                  <td>
+                    <span className="link" onClick={() => !editSaving && saveEdit(entry)}>
+                      {editSaving ? "Saving…" : "Save"}
+                    </span>{" "}
+                    <span className="link" onClick={cancelEdit}>
+                      Cancel
+                    </span>
+                  </td>
+                </tr>
+              ) : (
+                <tr key={entry.id}>
+                  <td>{entry.vendor}</td>
+                  <td>{entry.model}</td>
+                  <td>
+                    <span className="link" onClick={() => startEdit(entry)}>
+                      Edit
+                    </span>
+                  </td>
+                </tr>
+              )
+            )}
+            {sorted.length === 0 && (
               <tr>
-                <td colSpan={2}>No models yet.</td>
+                <td colSpan={3}>No models yet.</td>
               </tr>
             )}
           </tbody>

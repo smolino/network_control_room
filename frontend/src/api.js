@@ -123,6 +123,10 @@ export function createRouterModel({ vendor, model }) {
   return postJSON("/router-models", { vendor, model });
 }
 
+export function updateRouterModel(id, { vendor, model }) {
+  return putJSON(`/router-models/${id}`, { vendor, model });
+}
+
 export function fetchIncidentAnalysis(id) {
   return getJSON(`/incidents/${id}/analysis`);
 }
