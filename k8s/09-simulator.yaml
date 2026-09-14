@@ -18,17 +18,39 @@ spec:
     spec:
       imagePullSecrets:
         - name: dockerhub-cred
-      initContainers:
-        - name: wait-for-backend
-          image: busybox:1.36
-          command: ["sh", "-c", "until wget -q -O- http://backend:8000/api/health; do echo waiting for backend; sleep 2; done"]
+      # No initContainers: trap_simulator.py polls BACKEND_API_URL on its
+      # own and simply retries if backend isn't reachable yet.
       containers:
         - name: simulator
           image: docker.io/mescalo/network-control-room-simulator:latest
           env:
+            # Overrides the configmap's TRAP_HOST (0.0.0.0, meant for the
+            # backend's own listener) with the backend Service's name.
             - {name: TRAP_HOST, value: backend}
-          envFrom:
-            - configMapRef: {name: ncr-config}
+            - name: BACKEND_API_URL
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: BACKEND_API_URL}}
+            - name: TRAP_PORT
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: TRAP_PORT}}
+            - name: TRAP_COMMUNITY
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: TRAP_COMMUNITY}}
+            - name: FLAPPING_ROUTER_COUNT
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: FLAPPING_ROUTER_COUNT}}
+            - name: DOWN_ROUTER_COUNT
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: DOWN_ROUTER_COUNT}}
+            - name: FLAPPING_BUNDLE_COUNT
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: FLAPPING_BUNDLE_COUNT}}
+            - name: TICK_MIN_SECONDS
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: TICK_MIN_SECONDS}}
+            - name: TICK_MAX_SECONDS
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: TICK_MAX_SECONDS}}
+            - name: CUSTOMER_TICK_MIN_SECONDS
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: CUSTOMER_TICK_MIN_SECONDS}}
+            - name: CUSTOMER_TICK_MAX_SECONDS
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: CUSTOMER_TICK_MAX_SECONDS}}
+            - name: BGP_INCIDENT_INTERVAL_SECONDS
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: BGP_INCIDENT_INTERVAL_SECONDS}}
+            - name: BUNDLE_FAILURE_INTERVAL_SECONDS
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: BUNDLE_FAILURE_INTERVAL_SECONDS}}
           resources:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {cpu: 500m, memory: 256Mi}
