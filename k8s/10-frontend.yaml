@@ -59,6 +59,12 @@ spec:
       containers:
         - name: frontend
           image: docker.io/mescalo/network-control-room-frontend:latest
+          # Skip the image's own /start.sh: it does
+          # `cp .../nginx.ssl.conf /etc/nginx/conf.d/default.conf`, which
+          # fails ("File exists") because that path is already occupied by
+          # the frontend-nginx-conf ConfigMap mount below. Exec nginx
+          # directly instead - our own default.conf is already in place.
+          command: ["nginx", "-g", "daemon off;"]
           ports:
             - containerPort: 80
           volumeMounts:

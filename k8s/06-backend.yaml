@@ -30,28 +30,18 @@ spec:
     spec:
       imagePullSecrets:
         - name: dockerhub-cred
-      initContainers:
-        # depends_on: condition: service_healthy has no direct Kubernetes
-        # equivalent - the app already retries Kafka/Neo4j with backoff (see
-        # README), but Postgres migrations on startup want it reachable
-        # first, so wait for all three the same way compose's healthchecks did.
-        - name: wait-for-deps
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - |
-              until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done
-              until nc -z kafka 9092; do echo waiting for kafka; sleep 2; done
-              until nc -z neo4j 7687; do echo waiting for neo4j; sleep 2; done
+      # No initContainers: depends_on: condition: service_healthy has no
+      # direct Kubernetes equivalent, and this Deployment deliberately
+      # doesn't wait for postgres/kafka/neo4j to be reachable first. The
+      # app already retries Kafka/Neo4j with backoff (see README); if
+      # init_db() hits Postgres before it's ready, the container exits and
+      # the default restartPolicy (Always) retries it until Postgres is up.
       containers:
         - name: backend
           image: docker.io/mescalo/network-control-room-backend:latest
           ports:
             - {containerPort: 8000, name: http}
             - {containerPort: 1162, protocol: UDP, name: snmp-trap}
-          envFrom:
-            - configMapRef: {name: ncr-config}
           env:
             - name: DATABASE_URL
               valueFrom: {secretKeyRef: {name: ncr-secrets, key: DATABASE_URL}}
@@ -59,6 +49,22 @@ spec:
               valueFrom: {secretKeyRef: {name: ncr-secrets, key: NEO4J_USER}}
             - name: NEO4J_PASSWORD
               valueFrom: {secretKeyRef: {name: ncr-secrets, key: NEO4J_PASSWORD}}
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: KAFKA_BOOTSTRAP_SERVERS}}
+            - name: NEO4J_URI
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: NEO4J_URI}}
+            - name: TRAP_HOST
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: TRAP_HOST}}
+            - name: TRAP_PORT
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: TRAP_PORT}}
+            - name: TRAP_COMMUNITY
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: TRAP_COMMUNITY}}
+            - name: FLAP_WINDOW_SECONDS
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: FLAP_WINDOW_SECONDS}}
+            - name: FLAP_TRANSITION_THRESHOLD
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: FLAP_TRANSITION_THRESHOLD}}
+            - name: CORS_ORIGINS
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: CORS_ORIGINS}}
           volumeMounts:
             - {name: backend-data, mountPath: /app/data}
           readinessProbe:
