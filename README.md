@@ -116,9 +116,35 @@ incident type; topology graph → root cause; incident type → playbook).
 
 ## Running it
 
+Local dev (includes the trap simulator, which seeds and drives the fake
+router fleet):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+Or set `COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml` in `.env`
+(see `.env.example`) so a plain `docker compose up --build` includes it.
+
+Production uses `docker-compose.yml` on its own - no simulator, so routers
+and traps have to come from the real network:
+
 ```bash
 docker compose up --build
 ```
+
+To load the full 4400-router fleet (400 primaries + 4000 customers) and 600
+BGP links, import `seed/routers.csv` and
+`seed/bgp_links.csv` once the stack is up:
+
+```bash
+./scripts/import-fleet.py                                    # against http://localhost:8000
+./scripts/import-fleet.py https://controlroom.point2point.org.uk
+```
+
+The files use the Add Fleet bulk-upload CSV format, so you can also upload
+them from the UI (Add Fleet → Bulk upload: routers first, then links). The
+script is idempotent and posts in 500-row chunks.
 
 Then open:
 - **http://localhost** — the web UI (map, dashboard, routers, incidents)
@@ -131,7 +157,7 @@ Then open:
 `backend` now waits on `kafka`, `neo4j`, and `postgres` all being healthy
 before it starts, so first boot takes a bit longer than before — Kafka
 and Neo4j both need a few seconds to finish their own internal startup.
-It takes a few seconds after that for the simulator to seed the 4400
+In dev, it takes a few seconds after that for the simulator to seed the 4400
 routers (400 primaries + 4000 customers) and start sending traps — the
 map fills in and incidents start appearing shortly after
 `docker compose up` finishes. If you ever see `backend` (or
@@ -649,6 +675,36 @@ Domain and contact email come from `DOMAIN` / `LETSENCRYPT_EMAIL` in `.env`
 - `frontend/start.sh` reloads nginx every 6h, so a renewed certificate gets
   picked up without needing a container restart.
 
+### Behind an existing host nginx
+
+If the server already runs nginx on the host (other vhosts on 80/443),
+`docker compose up` fails with "port 80 is already allocated". In that case
+let the host nginx terminate TLS and proxy to the `frontend` container on a
+loopback port instead - the `certbot` service and
+`scripts/init-letsencrypt.sh` aren't needed.
+
+1. In `.env`:
+
+   ```bash
+   DISABLE_SSL=true
+   HTTP_PORT=127.0.0.1:8080
+   HTTPS_PORT=127.0.0.1:8443   # unused, just keeps it off the host's 443
+   ```
+
+2. Install the vhost from `deploy/nginx-host.conf` and get a certificate
+   with the host's certbot:
+
+   ```bash
+   sudo cp deploy/nginx-host.conf /etc/nginx/sites-available/controlroom
+   sudo ln -s /etc/nginx/sites-available/controlroom /etc/nginx/sites-enabled/
+   sudo nginx -t && sudo systemctl reload nginx
+   sudo certbot --nginx -d controlroom.point2point.org.uk
+   ```
+
+3. `docker compose up -d --build` - optionally `docker compose stop certbot`.
+
+Renewal is then handled by the host's certbot timer, not the container.
+
 ## Switching the database
 
 Default is Postgres with the [PostGIS](https://postgis.net/) extension
@@ -718,6 +774,8 @@ python3 generate_customer_routers.py   # rewrites customer_routers_seed.json (10
 | `KAFKA_BOOTSTRAP_SERVERS` | backend, normalizer, correlator | `kafka:9092` | Kafka broker address for the alarm pipeline (see "Alarm pipeline" above) |
 | `NEO4J_URI` | backend, correlator | `bolt://neo4j:7687` | Topology graph connection - written by `backend` (on BGP seed), read by `correlator` (root-cause lookups) |
 | `NEO4J_USER` / `NEO4J_PASSWORD` | backend, correlator | `neo4j` / `ncrpassword` | Neo4j credentials the app connects with. `NEO4J_PASSWORD` also drives the `neo4j` service's own `NEO4J_AUTH` in `docker-compose.yml` (`${NEO4J_PASSWORD:-ncrpassword}`), so changing it in `.env` updates both sides from one value; `NEO4J_USER` only changes what the app sends - the server's admin username is always `neo4j` (the image's own default), so leave it as-is unless you also change that server-side |
+| `HTTP_PORT` / `HTTPS_PORT` | frontend (host side) | `80` / `443` | Host ports `frontend` publishes; set e.g. `127.0.0.1:8080` when a host nginx already owns 80/443 (see "Behind an existing host nginx") |
+| `DISABLE_SSL` | frontend | `false` | Serve plain HTTP only (local dev, or TLS terminated by a host nginx) |
 | `TRAP_PORT` | backend | `1162` | UDP port the trap listener binds |
 | `FLAP_WINDOW_SECONDS` | backend | `600` | Sliding window for flap detection |
 | `FLAP_TRANSITION_THRESHOLD` | backend | `4` | Transitions within the window to call it "flapping" |

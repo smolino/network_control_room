@@ -132,29 +132,15 @@ services:
       timeout: 5s
       retries: 20
 
-  simulator:
-    build: ./simulator
-    depends_on:
-      backend:
-        condition: service_healthy
-    environment:
-      BACKEND_API_URL: http://backend:8000
-      TRAP_HOST: backend
-      TRAP_PORT: 1162
-      TRAP_COMMUNITY: public
-      FLAPPING_ROUTER_COUNT: 5
-      DOWN_ROUTER_COUNT: 3
-      FLAPPING_BUNDLE_COUNT: 3
-      TICK_MIN_SECONDS: 3
-      TICK_MAX_SECONDS: 8
-      BGP_INCIDENT_INTERVAL_SECONDS: 600
-      BUNDLE_FAILURE_INTERVAL_SECONDS: 900
-
   frontend:
     build: ./frontend
     ports:
-      - "80:80"
-      - "443:443"
+      # Override in .env when something else on the host already owns
+      # 80/443 (e.g. a host nginx with other vhosts) - set
+      # HTTP_PORT=127.0.0.1:8080 and proxy to it from the host nginx. See
+      # "Behind an existing host nginx" in the README.
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
     environment:
       # Set DISABLE_SSL=true in .env for local dev - no Let's Encrypt
       # certificate available, so nginx serves plain HTTP instead.
