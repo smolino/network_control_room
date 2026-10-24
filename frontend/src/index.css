@@ -317,6 +317,25 @@ tr:hover td {
   text-transform: uppercase;
 }
 
+.region-row td {
+  background: #121829;
+  cursor: pointer;
+  user-select: none;
+}
+
+.region-caret {
+  display: inline-block;
+  width: 1.2rem;
+  color: #9aa4bf;
+  font-size: 0.7rem;
+}
+
+.region-meta {
+  margin-left: 0.6rem;
+  color: #9aa4bf;
+  font-size: 0.8rem;
+}
+
 .badge.up { background: #1b3d2b; color: #4ade80; }
 .badge.down { background: #3d1b1b; color: #f87171; }
 .badge.flapping { background: #3d341b; color: #facc15; }
