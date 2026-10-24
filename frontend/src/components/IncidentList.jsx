@@ -148,7 +148,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
   };
 
   const handleResetAll = async () => {
-    if (!window.confirm("Reset ALL open incidents system-wide, across every router, regardless of the current filter? This cannot be undone.")) {
+    if (!window.confirm("Reset ALL open incidents system-wide, across every router, regardless of the current filter, and mark every link and BGP session back up? This cannot be undone.")) {
       return;
     }
     setResettingAll(true);

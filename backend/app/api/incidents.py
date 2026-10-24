@@ -6,10 +6,15 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import (
     AlarmLayer,
+    BgpPeering,
+    BgpSessionStatus,
+    BundleStatus,
     Incident,
     IncidentNotification,
     IncidentStatus,
     IncidentType,
+    Interface,
+    InterfaceBundle,
     RemediationAction,
     Router,
     RouterStatus,
@@ -321,6 +326,23 @@ async def bulk_resolve_incidents(payload: BulkResolveIn, db: Session = Depends(g
     return [_to_incident_out(i, latest_by_incident) for i in incidents]
 
 
+def _restore_link_state(db: Session, now: datetime) -> None:
+    """Brings every bundle member's IS-IS adjacency, every bundle and every
+    BGP peering back up. Resolving incidents alone leaves this state behind
+    (e.g. a fiber fault interrupted mid-way by a backend restart never sends
+    its "up" events), so a peering would stay red with a reroute path on the
+    map after a full reset. The frontend picks this up on its periodic
+    resync - no per-peering broadcast needed."""
+    db.query(Interface).filter(Interface.isis_adjacency_up.is_(False)).update({Interface.isis_adjacency_up: True, Interface.last_changed_at: now}, synchronize_session=False)
+    db.query(InterfaceBundle).filter(InterfaceBundle.status != BundleStatus.UP).update(
+        {InterfaceBundle.status: BundleStatus.UP, InterfaceBundle.last_changed_at: now}, synchronize_session=False
+    )
+    db.query(BgpPeering).filter(BgpPeering.status != BgpSessionStatus.ESTABLISHED).update(
+        {BgpPeering.status: BgpSessionStatus.ESTABLISHED, BgpPeering.last_changed_at: now}, synchronize_session=False
+    )
+    db.commit()
+
+
 @router.post("/resolve-all", response_model=list[IncidentOut])
 async def resolve_all_open_incidents(db: Session = Depends(get_db)):
     """Resolves every OPEN incident system-wide. Distinct from bulk_resolve_
@@ -332,6 +354,7 @@ async def resolve_all_open_incidents(db: Session = Depends(get_db)):
     incidents = db.query(Incident).filter(Incident.status == IncidentStatus.OPEN).all()
     now = datetime.now(timezone.utc)
     await _resolve_incidents_and_broadcast(db, incidents, now)
+    _restore_link_state(db, now)
 
     latest_by_incident = _latest_remediation_by_incident(db, [i.id for i in incidents])
     return [_to_incident_out(i, latest_by_incident) for i in incidents]
