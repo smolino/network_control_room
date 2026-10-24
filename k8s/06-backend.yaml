@@ -53,6 +53,8 @@ spec:
               valueFrom: {configMapKeyRef: {name: ncr-config, key: KAFKA_BOOTSTRAP_SERVERS}}
             - name: NEO4J_URI
               valueFrom: {configMapKeyRef: {name: ncr-config, key: NEO4J_URI}}
+            - name: FIBER_FAULT_SIMULATION
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: FIBER_FAULT_SIMULATION}}
             - name: TRAP_HOST
               valueFrom: {configMapKeyRef: {name: ncr-config, key: TRAP_HOST}}
             - name: TRAP_PORT

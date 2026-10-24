@@ -8,6 +8,12 @@
 # or set COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml in .env so a
 # plain `docker compose up` picks up both files.
 services:
+  # Turn on the backend's synthetic fiber-cut generator (app/fiber_faults.py)
+  # - off in production, where only real traps should open incidents.
+  backend:
+    environment:
+      FIBER_FAULT_SIMULATION: "true"
+
   simulator:
     build: ./simulator
     depends_on:

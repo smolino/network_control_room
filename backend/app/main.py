@@ -27,13 +27,14 @@ async def lifespan(app: FastAPI):
     # the event loop waiting on that.
     await asyncio.to_thread(get_producer)
     transport = await start_trap_listener()
-    fault_task = asyncio.create_task(fiber_fault_loop())
+    fault_task = asyncio.create_task(fiber_fault_loop()) if settings.fiber_fault_simulation else None
     relay_thread, relay_stop = ws_relay.start(asyncio.get_running_loop())
     try:
         yield
     finally:
         transport.close()
-        fault_task.cancel()
+        if fault_task:
+            fault_task.cancel()
         ws_relay.stop(relay_thread, relay_stop)
 
 

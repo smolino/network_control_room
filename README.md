@@ -714,6 +714,7 @@ python3 generate_customer_routers.py   # rewrites customer_routers_seed.json (10
 | `NEO4J_URI` | backend, correlator | `bolt://neo4j:7687` | Topology graph connection - written by `backend` (on BGP seed), read by `correlator` (root-cause lookups) |
 | `NEO4J_USER` / `NEO4J_PASSWORD` | backend, correlator | `neo4j` / `ncrpassword` | Neo4j credentials the app connects with. `NEO4J_PASSWORD` also drives the `neo4j` service's own `NEO4J_AUTH` in `docker-compose.yml` (`${NEO4J_PASSWORD:-ncrpassword}`), so changing it in `.env` updates both sides from one value; `NEO4J_USER` only changes what the app sends - the server's admin username is always `neo4j` (the image's own default), so leave it as-is unless you also change that server-side |
 | `HTTP_PORT` | frontend (host side) | `80` | Host port `frontend` publishes (plain HTTP); set e.g. `127.0.0.1:8080` behind the external nginx (see "HTTPS / reverse proxy") |
+| `FIBER_FAULT_SIMULATION` | backend | `false` | Run the synthetic fiber-cut generator (`app/fiber_faults.py`: fake OPTICAL_ALARM + IS-IS flaps every 15-40s). Dev/demo only - `docker-compose.dev.yml` and `k8s/02-configmap.yaml` set it to `true` |
 | `TRAP_PORT` | backend | `1162` | UDP port the trap listener binds |
 | `FLAP_WINDOW_SECONDS` | backend | `600` | Sliding window for flap detection |
 | `FLAP_TRANSITION_THRESHOLD` | backend | `4` | Transitions within the window to call it "flapping" |

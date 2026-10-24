@@ -15,6 +15,11 @@ class Settings:
     flap_window_seconds: int = int(os.getenv("FLAP_WINDOW_SECONDS", "600"))
     flap_transition_threshold: int = int(os.getenv("FLAP_TRANSITION_THRESHOLD", "4"))
 
+    # Synthetic fiber-cut generator (app.fiber_faults) - demo/dev only. Off by
+    # default so production never sees fake OPTICAL_ALARM/ISIS incidents;
+    # docker-compose.dev.yml turns it on alongside the trap simulator.
+    fiber_fault_simulation: bool = os.getenv("FIBER_FAULT_SIMULATION", "false").lower() in ("true", "1")
+
     cors_origins: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
 
     # Outbound email for the Human Review "send to SOC/maintenance" action.

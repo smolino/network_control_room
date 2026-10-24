@@ -14,6 +14,10 @@ class SimulationStatus(BaseModel):
     enabled: bool
 
 
+def is_enabled() -> bool:
+    return _state["enabled"]
+
+
 @router.get("/status", response_model=SimulationStatus)
 def get_status():
     return _state

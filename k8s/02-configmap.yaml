@@ -14,7 +14,9 @@ data:
   FLAP_WINDOW_SECONDS: "600"
   FLAP_TRANSITION_THRESHOLD: "4"
   CORS_ORIGINS: "*"
-  # simulator
+  # simulator (+ the backend's synthetic fiber-cut generator - set "false"
+  # for a real deployment without the simulator)
+  FIBER_FAULT_SIMULATION: "true"
   BACKEND_API_URL: http://backend:8000
   FLAPPING_ROUTER_COUNT: "5"
   DOWN_ROUTER_COUNT: "3"

@@ -30,6 +30,7 @@ import asyncio
 import logging
 import random
 
+from app.api.simulation import is_enabled as simulation_enabled
 from app.db import SessionLocal
 from app.models import BgpPeering, BgpSessionStatus, InterfaceBundle
 from app.snmp.oid_map import FIBER_CUT_CLEAR_OID, FIBER_CUT_OID, IF_NAME_OID, ISIS_ADJACENCY_DOWN_OID, ISIS_ADJACENCY_UP_OID, ROUTER_ID_OID
@@ -145,9 +146,13 @@ async def _run_one_fault(peering_id: int, segment_index: int) -> None:
 async def fiber_fault_loop() -> None:
     """Runs for the lifetime of the app: every 15-40s, knocks out one
     interior span of fiber on a random established peering long enough to
-    have such a span, then heals it exactly FAULT_DURATION_SECONDS later."""
+    have such a span, then heals it exactly FAULT_DURATION_SECONDS later.
+    Only started when FIBER_FAULT_SIMULATION is on (see app.main), and
+    pauses with the Settings > Simulation toggle like the trap simulator."""
     while True:
         await asyncio.sleep(random.uniform(FAULT_INTERVAL_MIN_SECONDS, FAULT_INTERVAL_MAX_SECONDS))
+        if not simulation_enabled():
+            continue
         db = SessionLocal()
         try:
             candidates = _eligible_peering_ids_and_counts(db)
