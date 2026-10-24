@@ -32,6 +32,14 @@ async function deleteJSON(path) {
   return resp.json();
 }
 
+// City -> coordinates via the backend's Nominatim proxy - for cities that
+// aren't in the built-in table (cities.js). Rejects when nothing matches.
+export function geocodeCity(city, country) {
+  const params = new URLSearchParams({ city });
+  if (country) params.set("country", country);
+  return getJSON(`/geocode?${params}`);
+}
+
 export function fetchRouters() {
   return getJSON("/routers");
 }

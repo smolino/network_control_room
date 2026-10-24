@@ -20,6 +20,11 @@ class Settings:
     # docker-compose.dev.yml turns it on alongside the trap simulator.
     fiber_fault_simulation: bool = os.getenv("FIBER_FAULT_SIMULATION", "false").lower() in ("true", "1")
 
+    # Geocoder behind GET /api/geocode (Add Fleet city -> lat/lon), see
+    # app/api/geocode.py. Point at a self-hosted Nominatim to avoid the
+    # public instance's rate limits.
+    nominatim_url: str = os.getenv("NOMINATIM_URL", "https://nominatim.openstreetmap.org").rstrip("/")
+
     cors_origins: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
 
     # Outbound email for the Human Review "send to SOC/maintenance" action.

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { createRouterModel, fetchRouterModels, seedBgpPeerings, seedRouters, updateRouterModel } from "../api.js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createRouterModel, fetchRouterModels, geocodeCity, seedBgpPeerings, seedRouters, updateRouterModel } from "../api.js";
 import { CITIES, CITY_BY_NAME } from "../cities.js";
 import { downloadTextFile, parseCSV, toCSV } from "../csv.js";
 import { haversineKm, REPEATER_SPACING_KM } from "../geo.js";
@@ -30,6 +30,52 @@ function applyCityMatch(form, cityValue) {
     longitude: String(match.longitude),
     country: form.country || match.country,
   };
+}
+
+// For a city that isn't in the built-in table, looks it up online once the
+// user stops typing and autofills latitude/longitude (and country if still
+// empty) the same way applyCityMatch does. Returns a hint to show under the
+// form, or null. Country is read through a ref so the autofilled country
+// doesn't trigger a second lookup.
+function useCityGeocode(form, setForm) {
+  const [hint, setHint] = useState(null);
+  const countryRef = useRef(form.country);
+  countryRef.current = form.country;
+
+  useEffect(() => {
+    const city = form.city.trim();
+    if (city.length < 2 || CITY_BY_NAME[city.toLowerCase()]) {
+      setHint(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setHint(`Looking up ${city}…`);
+      try {
+        const match = await geocodeCity(city, countryRef.current.trim());
+        if (cancelled) return;
+        setForm((f) =>
+          f.city.trim() !== city
+            ? f
+            : {
+                ...f,
+                latitude: String(match.latitude),
+                longitude: String(match.longitude),
+                country: f.country || match.country || "",
+              }
+        );
+        setHint(`Found: ${match.display_name}`);
+      } catch {
+        if (!cancelled) setHint(`Couldn't find "${city}" - enter latitude/longitude manually.`);
+      }
+    }, 700);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [form.city, setForm]);
+
+  return hint;
 }
 
 const ROUTER_TEMPLATE_HEADERS = [
@@ -294,6 +340,7 @@ function AddPrimaryForm({ routers, models, onFleetChanged }) {
 
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
   const handleCityChange = (e) => setForm((f) => applyCityMatch(f, e.target.value));
+  const geocodeHint = useCityGeocode(form, setForm);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -372,7 +419,7 @@ function AddPrimaryForm({ routers, models, onFleetChanged }) {
             value={form.city}
             onChange={handleCityChange}
             list="city-options"
-            placeholder="Start typing a known city…"
+            placeholder="Start typing any city…"
           />
         </label>
         <label>
@@ -383,6 +430,11 @@ function AddPrimaryForm({ routers, models, onFleetChanged }) {
           Longitude *
           <input value={form.longitude} onChange={set("longitude")} placeholder="-99.1332" />
         </label>
+        {geocodeHint && (
+          <div className="settings-hint" style={{ gridColumn: "1 / -1" }}>
+            {geocodeHint}
+          </div>
+        )}
         <StatusBanner status={status} />
         <button type="submit" className="login-submit" disabled={saving}>
           {saving ? "Adding…" : "Add primary router"}
@@ -411,6 +463,7 @@ function AddCustomerForm({ primaries, routers, models, onFleetChanged }) {
 
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
   const handleCityChange = (e) => setForm((f) => applyCityMatch(f, e.target.value));
+  const geocodeHint = useCityGeocode(form, setForm);
 
   const handleParentChange = (e) => {
     const mgmtIp = e.target.value;
@@ -511,7 +564,7 @@ function AddCustomerForm({ primaries, routers, models, onFleetChanged }) {
             value={form.city}
             onChange={handleCityChange}
             list="city-options"
-            placeholder="Start typing a known city…"
+            placeholder="Start typing any city…"
           />
         </label>
         <label>
@@ -522,6 +575,11 @@ function AddCustomerForm({ primaries, routers, models, onFleetChanged }) {
           Longitude *
           <input value={form.longitude} onChange={set("longitude")} />
         </label>
+        {geocodeHint && (
+          <div className="settings-hint" style={{ gridColumn: "1 / -1" }}>
+            {geocodeHint}
+          </div>
+        )}
         <StatusBanner status={status} />
         <button type="submit" className="login-submit" disabled={saving || primaries.length === 0}>
           {saving ? "Adding…" : "Add customer router"}
@@ -895,8 +953,9 @@ export default function AddFleet({ routers, onFleetChanged }) {
       <p className="settings-hint">
         Add primary (backbone) routers, last-mile customer routers, and the BGP links between
         primaries (which carry the repeater dots shown on the map) — one at a time or in bulk via
-        CSV. New entries appear on the Map and Routers tabs immediately. Typing a known city name
-        (see the suggestions as you type) autofills its latitude/longitude.
+        CSV. New entries appear on the Map and Routers tabs immediately. Typing a city name
+        autofills its latitude/longitude - from the suggestions list, or looked up online for any
+        other city.
       </p>
       <div className="settings-tabs">
         <button className={tab === "manual" ? "active" : ""} onClick={() => setTab("manual")}>
