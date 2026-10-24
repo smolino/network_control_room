@@ -135,37 +135,12 @@ services:
   frontend:
     build: ./frontend
     ports:
-      # Override in .env when something else on the host already owns
-      # 80/443 (e.g. a host nginx with other vhosts) - set
-      # HTTP_PORT=127.0.0.1:8080 and proxy to it from the host nginx. See
-      # "Behind an existing host nginx" in the README.
+      # Plain HTTP only - TLS is terminated by an external nginx (not part
+      # of this project). In production set HTTP_PORT=127.0.0.1:8080 in .env
+      # and proxy to it from that nginx.
       - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
-    environment:
-      # Set DISABLE_SSL=true in .env for local dev - no Let's Encrypt
-      # certificate available, so nginx serves plain HTTP instead.
-      DISABLE_SSL: ${DISABLE_SSL:-false}
-    volumes:
-      - certbot-conf:/etc/letsencrypt:ro
-      - certbot-www:/var/www/certbot
     depends_on:
       - backend
-
-  # Requests and renews the Let's Encrypt certificate used by `frontend`.
-  # Run `scripts/init-letsencrypt.sh` once to obtain the first certificate
-  # (see "HTTPS / Let's Encrypt" in the README) — this service then just
-  # keeps it renewed for as long as the stack stays up.
-  certbot:
-    image: certbot/certbot:latest
-    volumes:
-      - certbot-conf:/etc/letsencrypt
-      - certbot-www:/var/www/certbot
-    entrypoint: >
-      /bin/sh -c "trap exit TERM;
-      while :; do
-        certbot renew --webroot -w /var/www/certbot --quiet;
-        sleep 12h & wait $${!};
-      done"
 
   # --- Optional: MySQL instead of the default Postgres+PostGIS ---
   # 1. Uncomment this service.
@@ -186,8 +161,6 @@ services:
 
 volumes:
   backend-data:
-  certbot-conf:
-  certbot-www:
   postgres-data:
   neo4j-data:
   # mysql-data:

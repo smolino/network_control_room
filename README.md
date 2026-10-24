@@ -193,14 +193,8 @@ A few things differ from the compose setup:
   `k8s/02-configmap.yaml` — both use the same default values as
   `docker-compose.yml`/`.env.example`, so change them there before applying
   outside a throwaway/demo cluster.
-- **Frontend TLS**: the `frontend` image's baked-in nginx config is HTTPS-
-  only and hardcoded to `controlroom.point2point.org.uk` with Let's Encrypt
-  certs from the `certbot` compose service, neither of which exists
-  in-cluster. `k8s/10-frontend.yaml` mounts a ConfigMap that overrides
-  `/etc/nginx/conf.d/default.conf` at runtime with a plain-HTTP config
-  (same `/api`, `/ws` proxy routes) instead of building a separate k8s-only
-  image — add TLS back later via an Ingress + cert-manager without touching
-  the image.
+- **TLS** isn't handled here either: the `frontend` image serves plain
+  HTTP only — add it via an Ingress + cert-manager or an external proxy.
 - **Access**: `frontend`'s Service is `NodePort` (`kubectl get svc -n ncr
   frontend` to see which port); there's no Ingress in these manifests.
 
@@ -640,70 +634,15 @@ wrong.
 | Dashboard bar-chart fill | gradient `#60a5fa` → `#818cf8` |
 | Destructive action ("Reset ALL open incidents") | `#7c2d12` fill / `#9a3412` border |
 
-## HTTPS / Let's Encrypt
+## HTTPS / reverse proxy
 
-`frontend/nginx.conf` serves the app over HTTPS on port 443 (redirecting
-plain HTTP to it) using a Let's Encrypt certificate for
-`controlroom.point2point.org.uk`. This needs two things before it'll work:
-
-1. A DNS **A record** for that domain pointing at the server's public IP.
-2. Ports **80** and **443** reachable from the internet (Let's Encrypt's
-   HTTP-01 challenge, which `scripts/init-letsencrypt.sh` uses, connects to
-   port 80).
-
-To get the first certificate, run once from the repo root, **before** (or
-instead of) `docker compose up`:
-
-```bash
-./scripts/init-letsencrypt.sh
-```
-
-This brings up `backend` + `frontend` itself (nginx has to be running to
-answer the ACME challenge), so nothing else needs to be started first. It's
-also safe to re-run — if a real certificate already exists it just makes
-sure the stack is up and exits. Set `STAGING=1` (in `.env` or the
-environment) to use Let's Encrypt's staging server while testing, which has
-no rate limits but issues untrusted certs.
-
-Domain and contact email come from `DOMAIN` / `LETSENCRYPT_EMAIL` in `.env`
-(see `.env.example`); changing the domain also means updating the two
-`server_name`/`ssl_certificate*` lines in `frontend/nginx.conf` to match.
-
-**Renewal is automatic** as long as the stack is running:
-- The `certbot` service (docker-compose.yml) loops `certbot renew` every
-  12h, which only actually renews within ~30 days of expiry.
-- `frontend/start.sh` reloads nginx every 6h, so a renewed certificate gets
-  picked up without needing a container restart.
-
-### Behind an existing host nginx
-
-If the server already runs nginx on the host (other vhosts on 80/443),
-`docker compose up` fails with "port 80 is already allocated". In that case
-let the host nginx terminate TLS and proxy to the `frontend` container on a
-loopback port instead - the `certbot` service and
-`scripts/init-letsencrypt.sh` aren't needed.
-
-1. In `.env`:
-
-   ```bash
-   DISABLE_SSL=true
-   HTTP_PORT=127.0.0.1:8080
-   HTTPS_PORT=127.0.0.1:8443   # unused, just keeps it off the host's 443
-   ```
-
-2. Install the vhost from `deploy/nginx-host.conf` and get a certificate
-   with the host's certbot:
-
-   ```bash
-   sudo cp deploy/nginx-host.conf /etc/nginx/sites-available/controlroom
-   sudo ln -s /etc/nginx/sites-available/controlroom /etc/nginx/sites-enabled/
-   sudo nginx -t && sudo systemctl reload nginx
-   sudo certbot --nginx -d controlroom.point2point.org.uk
-   ```
-
-3. `docker compose up -d --build` - optionally `docker compose stop certbot`.
-
-Renewal is then handled by the host's certbot timer, not the container.
+TLS is **not** part of this project. The `frontend` container serves plain
+HTTP only (`frontend/nginx.conf`: static app plus `/api` and `/ws` proxied to
+`backend`). In production, an nginx installed and managed separately on the
+host terminates TLS and proxies to it — bind `frontend` to loopback with
+`HTTP_PORT=127.0.0.1:8080` in `.env` and point that nginx at
+`http://127.0.0.1:8080`, forwarding the WebSocket upgrade headers for `/ws/`
+and allowing request bodies of at least 10m for Add Fleet bulk uploads.
 
 ## Switching the database
 
@@ -774,8 +713,7 @@ python3 generate_customer_routers.py   # rewrites customer_routers_seed.json (10
 | `KAFKA_BOOTSTRAP_SERVERS` | backend, normalizer, correlator | `kafka:9092` | Kafka broker address for the alarm pipeline (see "Alarm pipeline" above) |
 | `NEO4J_URI` | backend, correlator | `bolt://neo4j:7687` | Topology graph connection - written by `backend` (on BGP seed), read by `correlator` (root-cause lookups) |
 | `NEO4J_USER` / `NEO4J_PASSWORD` | backend, correlator | `neo4j` / `ncrpassword` | Neo4j credentials the app connects with. `NEO4J_PASSWORD` also drives the `neo4j` service's own `NEO4J_AUTH` in `docker-compose.yml` (`${NEO4J_PASSWORD:-ncrpassword}`), so changing it in `.env` updates both sides from one value; `NEO4J_USER` only changes what the app sends - the server's admin username is always `neo4j` (the image's own default), so leave it as-is unless you also change that server-side |
-| `HTTP_PORT` / `HTTPS_PORT` | frontend (host side) | `80` / `443` | Host ports `frontend` publishes; set e.g. `127.0.0.1:8080` when a host nginx already owns 80/443 (see "Behind an existing host nginx") |
-| `DISABLE_SSL` | frontend | `false` | Serve plain HTTP only (local dev, or TLS terminated by a host nginx) |
+| `HTTP_PORT` | frontend (host side) | `80` | Host port `frontend` publishes (plain HTTP); set e.g. `127.0.0.1:8080` behind the external nginx (see "HTTPS / reverse proxy") |
 | `TRAP_PORT` | backend | `1162` | UDP port the trap listener binds |
 | `FLAP_WINDOW_SECONDS` | backend | `600` | Sliding window for flap detection |
 | `FLAP_TRANSITION_THRESHOLD` | backend | `4` | Transitions within the window to call it "flapping" |
