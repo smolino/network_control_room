@@ -374,6 +374,41 @@ interface) — a real deployment would need the fuller topology
 that the design doc this app follows calls out as the hardest, most-
 often-underinvested-in part of a real system.
 
+## Fiber fault location (which repeater to replace)
+
+A fiber-cut alarm (`FIBER_CUT_OID`) carries the faulty span of the run in
+the `FIBER_SEGMENT_OID` varbind (`1.3.6.1.4.1.9.9.9999.4.3`), the way a
+repeater supervisory system reports which span lost signal. The incident
+stores it (`Incident.fault_segment_index`) and `backend/app/fault_location.py`
+turns it into something a field crew can act on:
+
+- Repeaters on a link are named **R1..Rn from `router_a`**, evenly spaced
+  along the run, the same positions as the repeater dots on the map. Span
+  *k* runs from Rk to R(k+1), so span 0 and span n touch a router.
+- For each fiber-cut incident the API returns `fault_location`: the two
+  points bounding the span (repeater label, km from `router_a`,
+  coordinates), the span length, and `repeaters_to_check`.
+
+The UI shows it in four places:
+- **Incident list:** a "📍 Faulty span R3 → R4 (km …)" line with **Locate
+  on map**, which zooms to the span and labels both repeaters. It works
+  for resolved incidents too, for after-the-fact repairs.
+- **Map:** hover any repeater dot to see its R-number and km mark, or the
+  pulsing fault segment to see its span.
+- **Human Review:** the dispatch text names the span, both repeaters'
+  km marks and coordinates, and the inspect/replace/OTDR steps.
+- **Incident description:** stored with the span, so emails and exports
+  carry it too.
+
+Loss of signal is reported by the first repeater after the break, so the
+fault is narrowed to one span, not one repeater. Both repeaters bounding
+it are listed for inspection, and the fiber of the span itself is the
+third suspect.
+
+New nullable columns like `fault_segment_index` are added to an existing
+database automatically at startup (`add_missing_columns` in `app/db.py`),
+since the project has no migration tool.
+
 ## Customer impact (blast radius)
 
 Every open, service-affecting incident (link down/flap, BGP, BFD, IS-IS,

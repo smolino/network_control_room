@@ -309,6 +309,18 @@ table {
   min-width: 100%;
 }
 
+/* Free-text cells inside a max-content table: wrap instead of widening the
+   whole table (fiber-fault descriptions/analyses run long). */
+.wrap-cell {
+  max-width: 480px;
+  white-space: normal;
+}
+
+.wrap-block {
+  max-width: min(1100px, 80vw);
+  white-space: normal;
+}
+
 th, td {
   text-align: left;
   padding: 0.5rem 0.75rem;

@@ -24,7 +24,7 @@ from kafka import KafkaConsumer, KafkaProducer
 from kafka.errors import NoBrokersAvailable
 
 from app.config import settings
-from app.db import SessionLocal
+from app.db import SessionLocal, add_missing_columns
 from app.snmp.classifier import classify_and_store
 from app.streaming.topics import INCIDENT_EVENTS, NORM_ALARMS
 
@@ -72,6 +72,7 @@ def _process(db, message: dict) -> dict | None:
 
 
 def main() -> None:
+    add_missing_columns()
     consumer, producer = _connect()
     logger.info("correlator: consuming %s, producing %s", NORM_ALARMS, INCIDENT_EVENTS)
     for record in consumer:

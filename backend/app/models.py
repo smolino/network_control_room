@@ -212,6 +212,9 @@ class Incident(Base):
     # to - marks it as a symptom rather than an independent problem, so it's
     # excluded from auto-heal and can be suppressed from the top-level view.
     root_cause_incident_id = Column(Integer, ForeignKey("incidents.id"), nullable=True, index=True)
+    # For a peering-scoped fiber cut: which span of the run lost signal, as
+    # reported by the alarm (FIBER_SEGMENT_OID) - see app.fault_location.
+    fault_segment_index = Column(Integer, nullable=True)
 
     router = relationship("Router", back_populates="incidents")
     trap_events = relationship("TrapEvent", back_populates="incident")

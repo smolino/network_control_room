@@ -66,7 +66,7 @@ function IncidentReviewRow({ incident, router, teams, onSelectRouter, symptomati
         </td>
         <td>{incident.interface_name || "—"}</td>
         <td>{incident.trap_count}</td>
-        <td>
+        <td className="wrap-cell">
           {incident.description}
           {symptomaticCount > 0 && (
             <div style={{ fontSize: "0.72rem", color: "#9aa4bf", marginTop: "0.2rem" }}>
@@ -85,6 +85,7 @@ function IncidentReviewRow({ incident, router, teams, onSelectRouter, symptomati
         <tr>
           <td colSpan={8}>
             <div
+              className="wrap-block"
               style={{
                 padding: "0.75rem 1rem",
                 background: "#0f1420",

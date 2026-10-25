@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_admin, require_operator
 from app.db import get_db
+from app.fault_location import locate_fault
 from app.impact import Impact, compute_impacts
 from app.models import (
     AlarmLayer,
@@ -67,6 +68,8 @@ def _to_incident_out(
     impact = (impacts or {}).get(incident.id)
     if impact:
         out.impact = IncidentImpact(**impact.summary())
+    if incident.peering is not None and incident.fault_segment_index is not None:
+        out.fault_location = locate_fault(incident.peering, incident.fault_segment_index)
     return out
 
 
@@ -224,6 +227,7 @@ def _incident_ws_payload(incident: Incident) -> dict:
         "layer": incident.layer.value,
         "peering_id": incident.peering_id,
         "root_cause_incident_id": incident.root_cause_incident_id,
+        "fault_segment_index": incident.fault_segment_index,
     }
 
 

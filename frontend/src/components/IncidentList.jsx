@@ -59,6 +59,28 @@ function ImpactCell({ incident, onShowImpact }) {
   );
 }
 
+// Fiber cuts only: the span the alarm isolated the fault to, and the
+// repeaters bounding it - see backend/app/fault_location.py.
+export function FaultLocationNote({ location, onLocate }) {
+  if (!location) return null;
+  const { start, end } = location;
+  return (
+    <div style={{ fontSize: "0.74rem", color: "#fb923c", marginTop: "0.25rem" }}>
+      📍 Faulty span <strong>{start.label} → {end.label}</strong> (span {location.segment_index + 1} of{" "}
+      {location.segment_count}, km {start.km_from_a}–{end.km_from_a} of {location.distance_km})
+      {location.repeaters_to_check.length > 0 && <> · check {location.repeaters_to_check.join(" & ")}</>}
+      {onLocate && (
+        <>
+          {" "}
+          <span className="link" onClick={onLocate}>
+            Locate on map
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AutoHealCell({ incident }) {
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState(null);
@@ -130,7 +152,7 @@ function AutoHealCell({ incident }) {
   );
 }
 
-export default function IncidentList({ incidents, routers, onSelectRouter, onShowImpact }) {
+export default function IncidentList({ incidents, routers, onSelectRouter, onShowImpact, onLocateFault }) {
   const canResolve = useHasRole("operator");
   const canResetAll = useHasRole("admin");
   const [sortBy, setSortBy] = useState("updated");
@@ -321,8 +343,12 @@ export default function IncidentList({ incidents, routers, onSelectRouter, onSho
                   </td>
                   <td><ImpactCell incident={i} onShowImpact={onShowImpact} /></td>
                   <td>{i.trap_count}</td>
-                  <td>
+                  <td className="wrap-cell">
                     {i.description}
+                    <FaultLocationNote
+                      location={i.fault_location}
+                      onLocate={onLocateFault ? () => onLocateFault(i) : undefined}
+                    />
                     {i.root_cause_incident_id != null && (
                       <div style={{ fontSize: "0.72rem", color: "#fb923c", marginTop: "0.2rem" }}>
                         ↳ symptomatic of #{i.root_cause_incident_id}

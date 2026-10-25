@@ -33,7 +33,7 @@ import random
 from app.api.simulation import is_enabled as simulation_enabled
 from app.db import SessionLocal
 from app.models import BgpPeering, BgpSessionStatus, InterfaceBundle
-from app.snmp.oid_map import FIBER_CUT_CLEAR_OID, FIBER_CUT_OID, IF_NAME_OID, ISIS_ADJACENCY_DOWN_OID, ISIS_ADJACENCY_UP_OID, ROUTER_ID_OID
+from app.snmp.oid_map import FIBER_CUT_CLEAR_OID, FIBER_CUT_OID, FIBER_SEGMENT_OID, IF_NAME_OID, ISIS_ADJACENCY_DOWN_OID, ISIS_ADJACENCY_UP_OID, ROUTER_ID_OID
 from app.streaming.producer import publish_raw_alarm
 from app.ws import manager
 
@@ -96,7 +96,7 @@ def _start_fault(db, peering_id: int, segment_index: int) -> None:
     publish_raw_alarm(
         source_ip=peering.router_a.mgmt_ip,
         trap_oid=FIBER_CUT_OID,
-        varbinds=[(ROUTER_ID_OID, peering.router_a.mgmt_ip)],
+        varbinds=[(ROUTER_ID_OID, peering.router_a.mgmt_ip), (FIBER_SEGMENT_OID, str(segment_index))],
         peering_id=peering.id,
     )
     _publish_member_events(db, peering_id, segment_index, ISIS_ADJACENCY_DOWN_OID)

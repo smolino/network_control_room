@@ -33,13 +33,19 @@ def _to_peering_out(db: Session, peering: BgpPeering, adjacency: dict[int, list[
         reroute_path = shortest_reroute_path(adjacency, peering.router_a_id, peering.router_b_id)
     out = BgpPeeringOut.model_validate(peering)
     out.reroute_path = reroute_path
-    out.active_fault_segment = active_faults.get(peering.id)
     open_l1_incident = (
-        db.query(Incident.id)
+        db.query(Incident.id, Incident.fault_segment_index)
         .filter(Incident.peering_id == peering.id, Incident.layer == AlarmLayer.L1, Incident.status == IncidentStatus.OPEN)
         .first()
     )
     out.open_l1_incident_id = open_l1_incident[0] if open_l1_incident else None
+    # The open alarm's own segment wins over fiber_faults' in-memory state:
+    # it survives a backend restart and also covers real (non-simulated)
+    # fiber alarms.
+    if open_l1_incident and open_l1_incident[1] is not None:
+        out.active_fault_segment = open_l1_incident[1]
+    else:
+        out.active_fault_segment = active_faults.get(peering.id)
 
     bundle_a = db.query(InterfaceBundle).filter(
         InterfaceBundle.peering_id == peering.id, InterfaceBundle.router_id == peering.router_a_id

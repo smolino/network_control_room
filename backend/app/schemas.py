@@ -107,6 +107,32 @@ class IncidentImpactDetail(IncidentImpact):
     router_ids: list[int]
 
 
+class FaultPoint(BaseModel):
+    kind: str  # "repeater" | "router"
+    label: str  # "R3", or the router's hostname at either end of the run
+    repeater_index: int | None = None
+    km_from_a: float
+    latitude: float
+    longitude: float
+
+
+class FaultLocation(BaseModel):
+    """Which span of a peering's fiber run a fault is in - see
+    app.fault_location."""
+
+    peering_id: int
+    router_a: str
+    router_b: str
+    distance_km: float | None = None
+    repeater_count: int
+    segment_index: int
+    segment_count: int
+    segment_length_km: float
+    start: FaultPoint
+    end: FaultPoint
+    repeaters_to_check: list[str]
+
+
 class IncidentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -132,6 +158,9 @@ class IncidentOut(BaseModel):
     root_cause_incident_id: int | None = None
     # None for resolved and non-service-affecting incidents - see app.impact.
     impact: IncidentImpact | None = None
+    # Fiber cuts only: the faulty span and the repeaters bounding it.
+    fault_segment_index: int | None = None
+    fault_location: FaultLocation | None = None
 
 
 class BulkResolveIn(BaseModel):

@@ -15,6 +15,7 @@ def open_incident(
     interface_name: str | None,
     description: str,
     peering_id: int | None = None,
+    fault_segment_index: int | None = None,
 ) -> tuple[Incident, bool]:
     """Returns (incident, created) - `created` is False when an already-open
     incident of this type/interface was found and just had its trap_count
@@ -41,6 +42,7 @@ def open_incident(
         incident_type=incident_type,
         interface_name=interface_name,
         peering_id=peering_id,
+        fault_segment_index=fault_segment_index,
         status=IncidentStatus.OPEN,
         trap_count=1,
         description=description,

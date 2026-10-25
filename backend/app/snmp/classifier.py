@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.bgp_topology import build_established_adjacency, shortest_reroute_path
 from app.bundles import update_member_and_bundle
 from app.correlation import try_link_root_cause
+from app.fault_location import describe_fault, locate_fault
 from app.impact import compute_impacts
 from app.models import BgpPeering, BgpSessionStatus, BundleStatus, Incident, IncidentStatus, IncidentType, Router, RouterStatus, TrapEvent
 from app.remediation.engine import NOTIFY_ONLY_REASONS, maybe_remediate, needs_attention_router_ids
@@ -14,6 +15,8 @@ from app.snmp.oid_map import (
     BGP_BACKWARD_TRANSITION_OID,
     BGP_PEER_OID,
     FIBER_CUT_CLEAR_OID,
+    FIBER_CUT_OID,
+    FIBER_SEGMENT_OID,
     IF_NAME_OID,
     ISIS_ADJACENCY_DOWN_OID,
     ISIS_ADJACENCY_UP_OID,
@@ -73,6 +76,7 @@ def _log_transient_incident(
     now: datetime,
     interface_name: str | None = None,
     peering_id: int | None = None,
+    fault_segment_index: int | None = None,
 ) -> tuple[Incident, bool]:
     # Types with no automated fix (see NOTIFY_ONLY_REASONS) are genuinely
     # still unhandled - nothing has resolved them, they're just waiting on
@@ -85,7 +89,15 @@ def _log_transient_incident(
     # notification whose auto-heal action is presumed to have addressed it,
     # so it's always logged as a fresh already-resolved entry.
     if incident_type in NOTIFY_ONLY_REASONS:
-        return open_incident(db, router, incident_type, interface_name, description, peering_id=peering_id)
+        return open_incident(
+            db,
+            router,
+            incident_type,
+            interface_name,
+            description,
+            peering_id=peering_id,
+            fault_segment_index=fault_segment_index,
+        )
 
     incident = Incident(
         router_id=router.id,
@@ -99,6 +111,13 @@ def _log_transient_incident(
     db.add(incident)
     db.flush()
     return incident, True
+
+
+def _parse_segment(value: str | None) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
 
 
 def classify_and_store(
@@ -186,6 +205,13 @@ def classify_and_store(
         description = f"{trap_name} on {router.hostname}"
         if interface_name:
             description += f" (interface {interface_name})"
+        fault_segment_index = None
+        if trap_oid == FIBER_CUT_OID and peering_id is not None:
+            fault_segment_index = _parse_segment(_extract_varbind(varbinds, FIBER_SEGMENT_OID))
+            peering = db.query(BgpPeering).filter(BgpPeering.id == peering_id).first()
+            location = locate_fault(peering, fault_segment_index) if peering and fault_segment_index is not None else None
+            if location:
+                description = f"{trap_name}: fiber fault in {describe_fault(location)}"[:255]
         incident, created = _log_transient_incident(
             db,
             router,
@@ -194,6 +220,7 @@ def classify_and_store(
             now,
             interface_name=interface_name,
             peering_id=peering_id,
+            fault_segment_index=fault_segment_index,
         )
 
     trap_event.incident_id = incident.id
@@ -234,6 +261,12 @@ def classify_and_store(
         "layer": incident.layer.value,
         "peering_id": incident.peering_id,
         "root_cause_incident_id": incident.root_cause_incident_id,
+        "fault_segment_index": incident.fault_segment_index,
+        "fault_location": (
+            locate_fault(incident.peering, incident.fault_segment_index)
+            if incident.peering is not None and incident.fault_segment_index is not None
+            else None
+        ),
     }
     if remediation:
         incident_payload["remediation"] = remediation

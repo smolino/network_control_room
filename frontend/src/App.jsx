@@ -39,6 +39,9 @@ export default function App() {
   // Blast radius of one incident, highlighted on the map - see
   // backend/app/impact.py and IncidentList's "Show on map".
   const [impactHighlight, setImpactHighlight] = useState(null);
+  // The faulty span of one fiber-cut incident, zoomed to on the map - see
+  // backend/app/fault_location.py and IncidentList's "Locate on map".
+  const [faultHighlight, setFaultHighlight] = useState(null);
 
   const handleSessionChanged = useCallback((next) => {
     saveSession(next);
@@ -49,6 +52,7 @@ export default function App() {
     clearSession();
     setSession(null);
     setImpactHighlight(null);
+    setFaultHighlight(null);
   }, []);
 
   // Any API call coming back 401 (expired token, password reset by an
@@ -68,12 +72,22 @@ export default function App() {
         window.alert(`Incident #${incident.id} no longer has any customer impact.`);
         return;
       }
+      setFaultHighlight(null);
       setImpactHighlight({ incidentId: incident.id, incidentType: incident.incident_type, ...impact });
       setView("map");
     } catch (err) {
       window.alert(`Couldn't load the impact of incident #${incident.id}: ${err.message}`);
     }
-  }, []);  // The WS handler below is only ever set up once (empty effect deps), so
+  }, []);
+
+  const locateFaultOnMap = useCallback((incident) => {
+    if (!incident.fault_location) return;
+    setImpactHighlight(null);
+    setFaultHighlight({ incidentId: incident.id, status: incident.status, ...incident.fault_location });
+    setView("map");
+  }, []);
+
+  // The WS handler below is only ever set up once (empty effect deps), so
   // it can't read fresh `routers` state directly without going stale - a
   // ref sidesteps that without re-subscribing the socket on every routers
   // update.
@@ -201,6 +215,7 @@ export default function App() {
             opened_at: idx !== -1 ? prev[idx].opened_at : msg.trap.received_at,
             remediation: msg.incident.remediation ?? (idx !== -1 ? prev[idx].remediation : undefined),
             impact: msg.incident.impact ?? null,
+            fault_location: msg.incident.fault_location ?? (idx !== -1 ? prev[idx].fault_location : null),
           };
           if (idx === -1) return [merged, ...prev].slice(0, 200);
           const next = [...prev];
@@ -318,6 +333,8 @@ export default function App() {
               onFleetChanged={reloadAll}
               impactHighlight={impactHighlight}
               onClearImpact={() => setImpactHighlight(null)}
+              faultHighlight={faultHighlight}
+              onClearFault={() => setFaultHighlight(null)}
               onSelectRouter={(id) => {
                 setSelectedRouterId(id);
                 setView("routers");
@@ -342,6 +359,7 @@ export default function App() {
               incidents={incidents}
               routers={routers}
               onShowImpact={showImpactOnMap}
+              onLocateFault={locateFaultOnMap}
               onSelectRouter={(id) => {
                 setSelectedRouterId(id);
                 setView("routers");
