@@ -65,16 +65,19 @@ SERVICE_API_TOKEN = os.getenv("SERVICE_API_TOKEN", "")
 TRAP_HOST = os.getenv("TRAP_HOST", "backend")
 TRAP_PORT = int(os.getenv("TRAP_PORT", "1162"))
 COMMUNITY = os.getenv("TRAP_COMMUNITY", "public")
-TICK_MIN_SECONDS = float(os.getenv("TICK_MIN_SECONDS", "3"))
-TICK_MAX_SECONDS = float(os.getenv("TICK_MAX_SECONDS", "8"))
-FLAPPING_ROUTER_COUNT = int(os.getenv("FLAPPING_ROUTER_COUNT", "5"))
-DOWN_ROUTER_COUNT = int(os.getenv("DOWN_ROUTER_COUNT", "3"))
+TICK_MIN_SECONDS = float(os.getenv("TICK_MIN_SECONDS", "20"))
+TICK_MAX_SECONDS = float(os.getenv("TICK_MAX_SECONDS", "40"))
+FLAPPING_ROUTER_COUNT = int(os.getenv("FLAPPING_ROUTER_COUNT", "2"))
+DOWN_ROUTER_COUNT = int(os.getenv("DOWN_ROUTER_COUNT", "1"))
 # How many specific BGP-peering bundles get a chronically-flapping member -
 # mirrors FLAPPING_ROUTER_COUNT's "pick a few problem children up front"
 # pattern, but at the IS-IS/bundle-member layer (see bundle_flap_loop).
-FLAPPING_BUNDLE_COUNT = int(os.getenv("FLAPPING_BUNDLE_COUNT", "3"))
-CUSTOMER_TICK_MIN_SECONDS = float(os.getenv("CUSTOMER_TICK_MIN_SECONDS", "20"))
-CUSTOMER_TICK_MAX_SECONDS = float(os.getenv("CUSTOMER_TICK_MAX_SECONDS", "45"))
+FLAPPING_BUNDLE_COUNT = int(os.getenv("FLAPPING_BUNDLE_COUNT", "1"))
+# Quiet period between flap bursts in flap_loop / bundle_flap_loop.
+FLAP_QUIET_MIN_SECONDS = float(os.getenv("FLAP_QUIET_MIN_SECONDS", "300"))
+FLAP_QUIET_MAX_SECONDS = float(os.getenv("FLAP_QUIET_MAX_SECONDS", "600"))
+CUSTOMER_TICK_MIN_SECONDS = float(os.getenv("CUSTOMER_TICK_MIN_SECONDS", "60"))
+CUSTOMER_TICK_MAX_SECONDS = float(os.getenv("CUSTOMER_TICK_MAX_SECONDS", "120"))
 # Guarantees a primary-to-primary BGP incident at a fixed cadence, on top of
 # whatever random_event_loop's dice rolls happen to produce - so the
 # reroute-path feature always has something to demo within a bounded wait
@@ -348,7 +351,7 @@ async def flap_loop(engine, target, router: dict, interfaces: list[str]) -> None
             await send_trap(engine, target, LINK_UP_OID, router, interface)
             await asyncio.sleep(random.uniform(1, 3))
         # quiet period between flap bursts
-        await asyncio.sleep(random.uniform(60, 180))
+        await asyncio.sleep(random.uniform(FLAP_QUIET_MIN_SECONDS, FLAP_QUIET_MAX_SECONDS))
 
 
 async def bundle_flap_loop(engine, target, router: dict, peer_ip: str, bundle_info: dict) -> None:
@@ -370,7 +373,7 @@ async def bundle_flap_loop(engine, target, router: dict, peer_ip: str, bundle_in
             await send_trap(engine, target, ISIS_ADJACENCY_UP_OID, router, interface=member, bgp_peer_ip=peer_ip)
             await asyncio.sleep(random.uniform(1, 3))
         # quiet period between flap bursts
-        await asyncio.sleep(random.uniform(60, 180))
+        await asyncio.sleep(random.uniform(FLAP_QUIET_MIN_SECONDS, FLAP_QUIET_MAX_SECONDS))
 
 
 async def down_router_loop(engine, target, router: dict, interfaces: list[str]) -> None:

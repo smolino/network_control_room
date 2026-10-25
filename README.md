@@ -318,9 +318,9 @@ caused it — this is what turns a fiber cut into a single visible root
 cause instead of a wall of unrelated-looking router alarms.
 
 **The fiber-cut scenario** (`backend/app/fiber_faults.py`) is the
-concrete, always-running demonstration: every 15–40s it picks an
+concrete, always-running demonstration: every 3–6 minutes (configurable) it picks an
 established BGP peering with at least 2 SMF repeaters and knocks out one
-interior span for 10 seconds. Unlike the map-only "faulty segment"
+interior span for 60 seconds. Unlike the map-only "faulty segment"
 overlay this started as, it now raises a *real* chain of events through
 the pipeline above:
 
@@ -664,7 +664,7 @@ the blink stops on its own.
   soft reset can't fix a transport that's actually gone. The simulator
   demonstrates three distinct IS-IS link-failure scenarios:
   `random_event_loop` flips one random member per peer as one-off routine
-  noise across the whole mesh; `FLAPPING_BUNDLE_COUNT` (default 3) specific
+  noise across the whole mesh; `FLAPPING_BUNDLE_COUNT` (default 1) specific
   bundles get a chronically-flapping member instead
   (`bundle_flap_loop`, same burst/quiet cadence as the router-level
   `flap_loop`) - a persistently-demoable "degraded but redundant" bundle;
@@ -824,15 +824,18 @@ python3 generate_customer_routers.py   # rewrites customer_routers_seed.json (10
 | `SERVICE_API_TOKEN` | backend, simulator, `import-fleet.py` | unset (service auth off) | Admin-level bearer token for automation - see "Users and roles". Required by `docker-compose.dev.yml` |
 | `ADMIN_INITIAL_PASSWORD` | backend | `adminadmin` | Password for the `admin` account created on a fresh database |
 | `HTTP_PORT` | frontend (host side) | `80` | Host port `frontend` publishes (plain HTTP); set e.g. `127.0.0.1:8080` behind the external nginx (see "HTTPS / reverse proxy") |
-| `FIBER_FAULT_SIMULATION` | backend | `false` | Run the synthetic fiber-cut generator (`app/fiber_faults.py`: fake OPTICAL_ALARM + IS-IS flaps every 15-40s, picking a random country first and then a random link in it, so every region gets cuts). Dev/demo only - `docker-compose.dev.yml` and `k8s/02-configmap.yaml` set it to `true` |
+| `FIBER_FAULT_SIMULATION` | backend | `false` | Run the synthetic fiber-cut generator (`app/fiber_faults.py`: fake OPTICAL_ALARM + IS-IS flaps every `FIBER_FAULT_INTERVAL_MIN_SECONDS`-`FIBER_FAULT_INTERVAL_MAX_SECONDS`, picking a random country first and then a random link in it, so every region gets cuts). Dev/demo only - `docker-compose.dev.yml` and `k8s/02-configmap.yaml` set it to `true` |
+| `FIBER_FAULT_INTERVAL_MIN_SECONDS` / `FIBER_FAULT_INTERVAL_MAX_SECONDS` | backend | `180` / `360` | Gap between synthetic fiber cuts. Each cut opens an OPTICAL_ALARM plus IS-IS down/up incidents, so this is the main lever on simulated incident volume |
+| `FIBER_FAULT_DURATION_SECONDS` | backend | `60` | How long each synthetic fiber cut lasts before it heals |
 | `NOMINATIM_URL` | backend | `https://nominatim.openstreetmap.org` | Geocoder behind `GET /api/geocode`, which Add Fleet uses to fill latitude/longitude for cities not in its built-in list. The backend needs outbound internet access to reach it; point this at a self-hosted Nominatim to avoid the public instance's 1 request/s limit |
 | `TRAP_PORT` | backend | `1162` | UDP port the trap listener binds |
 | `FLAP_WINDOW_SECONDS` | backend | `600` | Sliding window for flap detection |
 | `FLAP_TRANSITION_THRESHOLD` | backend | `4` | Transitions within the window to call it "flapping" |
-| `FLAPPING_ROUTER_COUNT` / `DOWN_ROUTER_COUNT` | simulator | `5` / `3` | How many primaries misbehave (picked from the whole fleet at simulator startup) |
+| `FLAPPING_ROUTER_COUNT` / `DOWN_ROUTER_COUNT` | simulator | `2` / `1` | How many primaries misbehave (picked from the whole fleet at simulator startup) |
 | `FLEET_REFRESH_SECONDS` | simulator | `120` | How often the simulator re-reads the fleet from the backend, so newly added routers start getting traps |
-| `FLAPPING_BUNDLE_COUNT` | simulator | `3` | How many BGP-peering bundles get a chronically-flapping member (redundancy always absorbs it) |
-| `TICK_MIN_SECONDS` / `TICK_MAX_SECONDS` | simulator | `3` / `8` | Pace of the primary event stream |
-| `CUSTOMER_TICK_MIN_SECONDS` / `CUSTOMER_TICK_MAX_SECONDS` | simulator | `20` / `45` | Pace of the (much quieter) customer event stream |
+| `FLAPPING_BUNDLE_COUNT` | simulator | `1` | How many BGP-peering bundles get a chronically-flapping member (redundancy always absorbs it) |
+| `FLAP_QUIET_MIN_SECONDS` / `FLAP_QUIET_MAX_SECONDS` | simulator | `300` / `600` | Quiet period between the flapping routers'/bundles' flap bursts |
+| `TICK_MIN_SECONDS` / `TICK_MAX_SECONDS` | simulator | `20` / `40` | Pace of the primary event stream |
+| `CUSTOMER_TICK_MIN_SECONDS` / `CUSTOMER_TICK_MAX_SECONDS` | simulator | `60` / `120` | Pace of the (much quieter) customer event stream |
 | `BGP_INCIDENT_INTERVAL_SECONDS` | simulator | `600` | Cadence of a guaranteed logical BGP flap (session-level, bundle unaffected) |
 | `BUNDLE_FAILURE_INTERVAL_SECONDS` | simulator | `900` | Cadence of a guaranteed full bundle failure (every member down — redundancy exhausted, peering actually drops) |

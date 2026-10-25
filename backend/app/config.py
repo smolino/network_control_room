@@ -19,6 +19,11 @@ class Settings:
     # default so production never sees fake OPTICAL_ALARM/ISIS incidents;
     # docker-compose.dev.yml turns it on alongside the trap simulator.
     fiber_fault_simulation: bool = os.getenv("FIBER_FAULT_SIMULATION", "false").lower() in ("true", "1")
+    # Each cut opens an OPTICAL_ALARM plus an IS-IS down/up per affected
+    # bundle member, so this cadence dominates the simulated incident volume.
+    fiber_fault_interval_min_seconds: float = float(os.getenv("FIBER_FAULT_INTERVAL_MIN_SECONDS", "180"))
+    fiber_fault_interval_max_seconds: float = float(os.getenv("FIBER_FAULT_INTERVAL_MAX_SECONDS", "360"))
+    fiber_fault_duration_seconds: float = float(os.getenv("FIBER_FAULT_DURATION_SECONDS", "60"))
 
     # Geocoder behind GET /api/geocode (Add Fleet city -> lat/lon), see
     # app/api/geocode.py. Point at a self-hosted Nominatim to avoid the

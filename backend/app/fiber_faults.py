@@ -1,7 +1,7 @@
 """Fiber-segment fault generator for the "fiber cut -> downstream interface
 flap" root-cause correlation scenario (see app.correlation, app.bundles).
 
-Every 15-40s, this knocks out one interior span of fiber - strictly between
+Every FIBER_FAULT_INTERVAL_MIN/MAX_SECONDS (3-6 min by default), this knocks out one interior span of fiber - strictly between
 two adjacent repeaters on a BGP peering's physical SMF run (see
 BgpPeering.repeater_count) - for FAULT_DURATION_SECONDS, then heals it. Like
 app.snmp.trap_listener, this module is pure mediation now: it only decides
@@ -31,6 +31,7 @@ import logging
 import random
 
 from app.api.simulation import is_enabled as simulation_enabled
+from app.config import settings
 from app.db import SessionLocal
 from app.models import BgpPeering, BgpSessionStatus, InterfaceBundle
 from app.snmp.oid_map import FIBER_CUT_CLEAR_OID, FIBER_CUT_OID, FIBER_SEGMENT_OID, IF_NAME_OID, ISIS_ADJACENCY_DOWN_OID, ISIS_ADJACENCY_UP_OID, ROUTER_ID_OID
@@ -39,9 +40,9 @@ from app.ws import manager
 
 logger = logging.getLogger(__name__)
 
-FAULT_DURATION_SECONDS = 10
-FAULT_INTERVAL_MIN_SECONDS = 15
-FAULT_INTERVAL_MAX_SECONDS = 40
+FAULT_DURATION_SECONDS = settings.fiber_fault_duration_seconds
+FAULT_INTERVAL_MIN_SECONDS = settings.fiber_fault_interval_min_seconds
+FAULT_INTERVAL_MAX_SECONDS = settings.fiber_fault_interval_max_seconds
 
 # peering_id -> segment_index (1-based: the fault sits between the
 # segment_index-th and (segment_index+1)-th repeater along that peering's
@@ -152,7 +153,7 @@ async def _run_one_fault(peering_id: int, segment_index: int) -> None:
 
 
 async def fiber_fault_loop() -> None:
-    """Runs for the lifetime of the app: every 15-40s, knocks out one
+    """Runs for the lifetime of the app: every FAULT_INTERVAL_MIN/MAX_SECONDS, knocks out one
     interior span of fiber on a random established peering long enough to
     have such a span (random country first, then a random link in it), then
     heals it exactly FAULT_DURATION_SECONDS later.
