@@ -97,6 +97,16 @@ header.topbar h1 {
   font-size: 0.85rem;
 }
 
+.role-tag {
+  margin-left: 0.3rem;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid #262f45;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
 .icon-button {
   flex-shrink: 0;
   margin-left: 1rem;
@@ -157,7 +167,8 @@ header.topbar h1 {
 }
 
 .settings-card {
-  width: min(460px, 92vw);
+  /* Wide enough for the Users table's role column plus its action buttons. */
+  width: min(580px, 92vw);
 }
 
 .settings-card h3 {
@@ -208,6 +219,11 @@ header.topbar h1 {
   flex-wrap: wrap;
   gap: 0.35rem;
   justify-content: flex-end;
+}
+
+.users-table select {
+  padding: 0.25rem 0.4rem;
+  font-size: 0.78rem;
 }
 
 .users-table-actions button {

@@ -1,5 +1,7 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+
+from app.auth import require_admin
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 
@@ -18,12 +20,14 @@ def is_enabled() -> bool:
     return _state["enabled"]
 
 
+# Deliberately unauthenticated (see app.main) - the simulator polls it, and
+# a single on/off flag reveals nothing worth protecting.
 @router.get("/status", response_model=SimulationStatus)
 def get_status():
     return _state
 
 
-@router.post("/status", response_model=SimulationStatus)
+@router.post("/status", response_model=SimulationStatus, dependencies=[Depends(require_admin)])
 def set_status(payload: SimulationStatus):
     _state["enabled"] = payload.enabled
     return _state

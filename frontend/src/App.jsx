@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { connectEvents, fetchBgpPeerings, fetchIncidents, fetchRouters, fetchStats, fetchTeams } from "./api.js";
+import { connectEvents, fetchBgpPeerings, fetchIncidentImpact, fetchIncidents, fetchRouters, fetchStats, fetchTeams } from "./api.js";
+import { clearSession, hasRole, loadSession, saveSession, SessionContext, UNAUTHORIZED_EVENT } from "./auth.js";
 import MapView from "./components/MapView.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import RouterList from "./components/RouterList.jsx";
@@ -10,22 +11,20 @@ import HumanReview from "./components/HumanReview.jsx";
 import Login from "./components/Login.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 
-const CURRENT_USER_KEY = "ncr_current_user";
-
+// minRole only hides tabs the backend would refuse anyway (see app/auth.py).
 const TABS = [
   { key: "map", label: "Map" },
   { key: "dashboard", label: "Dashboard" },
   { key: "routers", label: "Routers" },
-  { key: "add-fleet", label: "Add Fleet" },
+  { key: "add-fleet", label: "Add Fleet", minRole: "admin" },
   { key: "incidents", label: "Incidents" },
   { key: "customer-incidents", label: "Customer Incidents" },
   { key: "human-review", label: "Human Review" },
 ];
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState(
-    () => sessionStorage.getItem(CURRENT_USER_KEY) || ""
-  );
+  const [session, setSession] = useState(loadSession);
+  const currentUser = session?.user ?? null;
   const authenticated = !!currentUser;
   const [view, setView] = useState("map");
   const [routers, setRouters] = useState([]);
@@ -37,7 +36,44 @@ export default function App() {
   const [selectedRouterId, setSelectedRouterId] = useState(null);
   const [connected, setConnected] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  // The WS handler below is only ever set up once (empty effect deps), so
+  // Blast radius of one incident, highlighted on the map - see
+  // backend/app/impact.py and IncidentList's "Show on map".
+  const [impactHighlight, setImpactHighlight] = useState(null);
+
+  const handleSessionChanged = useCallback((next) => {
+    saveSession(next);
+    setSession(next);
+  }, []);
+
+  const logout = useCallback(() => {
+    clearSession();
+    setSession(null);
+    setImpactHighlight(null);
+  }, []);
+
+  // Any API call coming back 401 (expired token, password reset by an
+  // admin, account deleted) lands here - see request() in api.js.
+  useEffect(() => {
+    window.addEventListener(UNAUTHORIZED_EVENT, logout);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, logout);
+  }, [logout]);
+
+  const visibleTabs = TABS.filter((t) => !t.minRole || hasRole(currentUser, t.minRole));
+  const activeView = visibleTabs.some((t) => t.key === view) ? view : "map";
+
+  const showImpactOnMap = useCallback(async (incident) => {
+    try {
+      const impact = await fetchIncidentImpact(incident.id);
+      if (!impact) {
+        window.alert(`Incident #${incident.id} no longer has any customer impact.`);
+        return;
+      }
+      setImpactHighlight({ incidentId: incident.id, incidentType: incident.incident_type, ...impact });
+      setView("map");
+    } catch (err) {
+      window.alert(`Couldn't load the impact of incident #${incident.id}: ${err.message}`);
+    }
+  }, []);  // The WS handler below is only ever set up once (empty effect deps), so
   // it can't read fresh `routers` state directly without going stale - a
   // ref sidesteps that without re-subscribing the socket on every routers
   // update.
@@ -101,6 +137,7 @@ export default function App() {
               status: msg.incident.status,
               closed_at: msg.incident.closed_at,
               resolved_manually: msg.incident.resolved_manually,
+              impact: null,
             };
             return next;
           });
@@ -163,6 +200,7 @@ export default function App() {
             updated_at: msg.trap.received_at,
             opened_at: idx !== -1 ? prev[idx].opened_at : msg.trap.received_at,
             remediation: msg.incident.remediation ?? (idx !== -1 ? prev[idx].remediation : undefined),
+            impact: msg.incident.impact ?? null,
           };
           if (idx === -1) return [merged, ...prev].slice(0, 200);
           const next = [...prev];
@@ -181,8 +219,13 @@ export default function App() {
         }
       });
       ws.onopen = () => setConnected(true);
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         setConnected(false);
+        // 4401: the backend rejected our token - see ws_events in main.py.
+        if (event.code === 4401) {
+          logout();
+          return;
+        }
         retryTimer = setTimeout(connect, 3000);
       };
       ws.onerror = () => ws.close();
@@ -193,23 +236,18 @@ export default function App() {
       clearTimeout(retryTimer);
       ws?.close();
     };
-  }, [authenticated]);
+  }, [authenticated, logout]);
 
   const selectedRouter = routers.find((r) => r.id === selectedRouterId) || null;
 
   if (!authenticated) {
     return (
-      <Login
-        onLogin={(username) => {
-          sessionStorage.setItem(CURRENT_USER_KEY, username);
-          setCurrentUser(username);
-        }}
-      />
+      <Login onLogin={handleSessionChanged} />
     );
   }
 
   return (
-    <>
+    <SessionContext.Provider value={currentUser}>
       <header className="topbar">
         <h1>Network Control Room</h1>
         {stats && (
@@ -220,11 +258,22 @@ export default function App() {
             <span><strong>{stats.routers_down}</strong> down</span>
             <span><strong>{stats.routers_flapping}</strong> flapping</span>
             <span><strong>{stats.open_incidents}</strong> open incidents</span>
+            {stats.customers_impacted > 0 && (
+              <span title="Distinct customer routers inside the blast radius of an open incident">
+                <strong style={{ color: stats.customers_down > 0 ? "#f87171" : "#facc15" }}>
+                  {stats.customers_impacted}
+                </strong>{" "}
+                customers impacted
+                {stats.customers_down > 0 && ` (${stats.customers_down} down)`}
+              </span>
+            )}
             <span>{connected ? "🟢 live" : "🔴 reconnecting"}</span>
           </div>
         )}
         <div className="topbar-actions">
-          <span className="current-user">{currentUser}</span>
+          <span className="current-user">
+            {currentUser.username} <span className="role-tag">{currentUser.role}</span>
+          </span>
           <button
             className="icon-button"
             onClick={() => setShowSettings(true)}
@@ -235,10 +284,7 @@ export default function App() {
           </button>
           <button
             className="logout-button"
-            onClick={() => {
-              sessionStorage.removeItem(CURRENT_USER_KEY);
-              setCurrentUser("");
-            }}
+            onClick={logout}
           >
             Log out
           </button>
@@ -246,7 +292,7 @@ export default function App() {
       </header>
       {showSettings && (
         <SettingsPanel
-          currentUser={currentUser}
+          onSessionChanged={handleSessionChanged}
           teams={teams}
           onTeamsChanged={reloadTeams}
           onClose={() => setShowSettings(false)}
@@ -254,10 +300,10 @@ export default function App() {
       )}
       <div className="app-body">
         <nav className="sidebar">
-          {TABS.map((t) => (
+          {visibleTabs.map((t) => (
             <button
               key={t.key}
-              className={view === t.key ? "active" : ""}
+              className={activeView === t.key ? "active" : ""}
               onClick={() => setView(t.key)}
             >
               {t.label}
@@ -265,19 +311,21 @@ export default function App() {
           ))}
         </nav>
         <main>
-          {view === "map" && (
+          {activeView === "map" && (
             <MapView
               routers={routers}
               peerings={peerings}
               onFleetChanged={reloadAll}
+              impactHighlight={impactHighlight}
+              onClearImpact={() => setImpactHighlight(null)}
               onSelectRouter={(id) => {
                 setSelectedRouterId(id);
                 setView("routers");
               }}
             />
           )}
-          {view === "dashboard" && <Dashboard stats={stats} incidents={incidents} />}
-          {view === "routers" && (
+          {activeView === "dashboard" && <Dashboard stats={stats} incidents={incidents} />}
+          {activeView === "routers" && (
             <RouterList
               routers={routers}
               selectedRouterId={selectedRouterId}
@@ -288,28 +336,30 @@ export default function App() {
               }}
             />
           )}
-          {view === "add-fleet" && <AddFleet routers={routers} onFleetChanged={reloadAll} />}
-          {view === "incidents" && (
+          {activeView === "add-fleet" && <AddFleet routers={routers} onFleetChanged={reloadAll} />}
+          {activeView === "incidents" && (
             <IncidentList
               incidents={incidents}
               routers={routers}
+              onShowImpact={showImpactOnMap}
               onSelectRouter={(id) => {
                 setSelectedRouterId(id);
                 setView("routers");
               }}
             />
           )}
-          {view === "customer-incidents" && (
+          {activeView === "customer-incidents" && (
             <IncidentList
               incidents={customerIncidents}
               routers={routers}
+              onShowImpact={showImpactOnMap}
               onSelectRouter={(id) => {
                 setSelectedRouterId(id);
                 setView("routers");
               }}
             />
           )}
-          {view === "human-review" && (
+          {activeView === "human-review" && (
             <HumanReview
               incidents={[...incidents, ...customerIncidents]}
               routers={routers}
@@ -322,7 +372,7 @@ export default function App() {
           )}
         </main>
       </div>
-      {view === "routers" && selectedRouter && (
+      {activeView === "routers" && selectedRouter && (
         <RouterDetail
           router={selectedRouter}
           routers={routers}
@@ -331,6 +381,6 @@ export default function App() {
           onSelectRouter={setSelectedRouterId}
         />
       )}
-    </>
+    </SessionContext.Provider>
   );
 }

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.bgp_topology import build_established_adjacency, shortest_reroute_path
 from app.bundles import update_member_and_bundle
 from app.correlation import try_link_root_cause
+from app.impact import compute_impacts
 from app.models import BgpPeering, BgpSessionStatus, BundleStatus, Incident, IncidentStatus, IncidentType, Router, RouterStatus, TrapEvent
 from app.remediation.engine import NOTIFY_ONLY_REASONS, maybe_remediate, needs_attention_router_ids
 from app.snmp.flapping import evaluate_isis_adjacency_event, evaluate_link_event, open_incident, resolve_incident_for_peering
@@ -236,6 +237,8 @@ def classify_and_store(
     }
     if remediation:
         incident_payload["remediation"] = remediation
+    impact = compute_impacts(db, [incident]).get(incident.id)
+    incident_payload["impact"] = impact.summary() if impact else None
 
     result = {
         "type": "trap",

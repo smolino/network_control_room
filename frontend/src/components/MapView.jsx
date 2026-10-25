@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import L from "leaflet";
-import { CircleMarker, MapContainer, Polyline, Popup, TileLayer } from "react-leaflet";
+import { CircleMarker, MapContainer, Polyline, Popup, TileLayer, useMap } from "react-leaflet";
 import { seedBgpPeerings } from "../api.js";
+import { useHasRole } from "../auth.js";
 import { haversineKm, REPEATER_SPACING_KM } from "../geo.js";
 
 // Marker fill colors - kept vivid so routers pop against any tile background.
@@ -58,6 +59,11 @@ const ALERT_STROKE = "#f97316";
 // "symptomatic of an upstream physical fault" from the solid ALERT_STROKE
 // ring, which means this router's own remediation attempt failed.
 const SYMPTOMATIC_STROKE = "#fb923c";
+
+// Halo around every router in a highlighted incident's blast radius (see
+// backend/app/impact.py) - red when customers have actually lost service,
+// amber when they're only running on reduced redundancy.
+const IMPACT_COLOR = { outage: "#f87171", degraded: "#facc15" };
 
 // Blink cadence for routers whose auto-heal attempt failed to fix the
 // problem - stops on its own once the router recovers, since
@@ -204,7 +210,28 @@ function RouterMarker({
   );
 }
 
-export default function MapView({ routers, peerings = [], onSelectRouter, onFleetChanged }) {
+// Zooms to the highlighted blast radius once, when it's first shown - not on
+// every routers refresh, so the operator can still pan away from it.
+function FitToRouters({ highlightKey, points }) {
+  const map = useMap();
+  useEffect(() => {
+    if (points.length === 0) return;
+    map.fitBounds(L.latLngBounds(points), { padding: [60, 60], maxZoom: 7 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightKey, map]);
+  return null;
+}
+
+export default function MapView({
+  routers,
+  peerings = [],
+  onSelectRouter,
+  onFleetChanged,
+  impactHighlight = null,
+  onClearImpact,
+}) {
+  // Creating a BGP link goes through the admin-only /api/bgp/seed.
+  const canLink = useHasRole("admin");
   // Top-level L1/L3 layer toggles (§7.2 of the design doc this map is
   // modeled on) - L1 is the physical fiber plane (repeater dots + fault
   // segment), L3 is the logical/control-plane plane (routers, BGP/customer
@@ -285,6 +312,12 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
     () => peerings.reduce((sum, p) => sum + (p.repeater_count || 0), 0),
     [peerings]
   );
+
+  const impactRouters = useMemo(
+    () => (impactHighlight ? impactHighlight.router_ids.map((id) => routerById[id]).filter(Boolean) : []),
+    [impactHighlight, routerById]
+  );
+  const impactPoints = useMemo(() => impactRouters.map((r) => [r.latitude, r.longitude]), [impactRouters]);
 
   const linkRouterA = linkSelection[0] != null ? routerById[linkSelection[0]] : null;
   const linkRouterB = linkSelection[1] != null ? routerById[linkSelection[1]] : null;
@@ -430,6 +463,7 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
           />
           Show reroutes ({activeReroutes.length})
         </label>
+        {canLink && (
         <label
           style={{
             display: "flex",
@@ -444,6 +478,7 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
           <input type="checkbox" checked={linkMode} onChange={(e) => toggleLinkMode(e.target.checked)} />
           🔗 Link BGP routers
         </label>
+        )}
         {linkMode && (
           <div style={{ fontSize: "0.72rem", color: "#9aa4bf" }}>
             Click two primary routers to connect them.
@@ -523,6 +558,39 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
               Cancel
             </button>
           )}
+        </div>
+      )}
+
+      {impactHighlight && (
+        <div
+          style={{
+            position: "absolute",
+            top: 12,
+            right: 12,
+            zIndex: 1000,
+            background: "#161c2cdd",
+            border: `1px solid ${IMPACT_COLOR[impactHighlight.level]}`,
+            borderRadius: 8,
+            padding: "0.5rem 0.8rem",
+            fontSize: "0.8rem",
+            maxWidth: 300,
+          }}
+        >
+          <div style={{ fontWeight: 600, color: IMPACT_COLOR[impactHighlight.level] }}>
+            Blast radius of incident #{impactHighlight.incidentId} ({impactHighlight.incidentType})
+          </div>
+          <div style={{ color: "#9aa4bf", margin: "0.25rem 0 0.4rem" }}>
+            {impactHighlight.primary_router_ids.length} primar
+            {impactHighlight.primary_router_ids.length === 1 ? "y" : "ies"}, {impactHighlight.customer_count} customer
+            {impactHighlight.customer_count === 1 ? "" : "s"}
+            {impactHighlight.customers_down > 0
+              ? ` — ${impactHighlight.customers_down} without service`
+              : " — all still reachable (reduced redundancy)"}
+            . Snapshot from when you opened it.
+          </div>
+          <button type="button" onClick={onClearImpact}>
+            Clear highlight
+          </button>
         </div>
       )}
 
@@ -689,6 +757,23 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
               onLinkClick={handleMarkerLinkClick}
             />
           ))}
+
+        {impactHighlight &&
+          impactRouters.map((r) => (
+            <CircleMarker
+              key={`impact-${r.id}`}
+              center={[r.latitude, r.longitude]}
+              radius={r.router_type === "customer" ? 8 : 12}
+              interactive={false}
+              pathOptions={{
+                color: IMPACT_COLOR[impactHighlight.level],
+                weight: 2.5,
+                fill: false,
+                opacity: blinkOn || !anyBlinking ? 1 : 0.6,
+              }}
+            />
+          ))}
+        {impactHighlight && <FitToRouters highlightKey={impactHighlight.incidentId} points={impactPoints} />}
       </MapContainer>
     </div>
   );

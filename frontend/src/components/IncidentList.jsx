@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { bulkResolveIncidents, fetchIncidentRemediation, resolveAllOpenIncidents, resolveIncident } from "../api.js";
+import { useHasRole } from "../auth.js";
 
 const REMEDIATION_BADGE = {
   success: "up",
@@ -14,6 +15,49 @@ const REMEDIATION_BADGE = {
 // engine). Lets an operator pull up exactly what still needs manual
 // triage regardless of which of those incident types it is.
 const NEEDS_REVIEW_FILTER = "__needs_review__";
+
+const IMPACT_COLOR = { outage: "#f87171", degraded: "#facc15" };
+
+// Open, service-affecting incidents only (see backend/app/impact.py) -
+// everything else has no blast radius. Sort key: customers actually down
+// first, then everyone merely degraded.
+function impactScore(incident) {
+  const impact = incident.impact;
+  return impact ? impact.customers_down * 100000 + impact.customer_count : -1;
+}
+
+function ImpactCell({ incident, onShowImpact }) {
+  const impact = incident.impact;
+  if (!impact) return <span style={{ color: "#5b6479" }}>—</span>;
+  const label =
+    impact.customers_down > 0
+      ? `${impact.customers_down}/${impact.customer_count} customers down`
+      : `${impact.customer_count} customer${impact.customer_count === 1 ? "" : "s"} at risk`;
+  return (
+    <div>
+      <span
+        style={{ color: IMPACT_COLOR[impact.level], fontWeight: 600, whiteSpace: "nowrap" }}
+        title={
+          impact.level === "outage"
+            ? "Customers that have lost service: their primary is cut off from the backbone, or the CPE itself is down"
+            : "Customers still reachable, but over reduced redundancy"
+        }
+      >
+        {impact.level === "outage" ? "⛔" : "⚠"} {label}
+      </span>
+      {impact.primary_router_ids.length > 0 && (
+        <div style={{ fontSize: "0.72rem", color: "#9aa4bf" }}>
+          via {impact.primary_router_ids.length} primar{impact.primary_router_ids.length === 1 ? "y" : "ies"}
+        </div>
+      )}
+      {onShowImpact && (
+        <span className="link" style={{ fontSize: "0.72rem" }} onClick={() => onShowImpact(incident)}>
+          Show on map
+        </span>
+      )}
+    </div>
+  );
+}
 
 function AutoHealCell({ incident }) {
   const [expanded, setExpanded] = useState(false);
@@ -86,7 +130,10 @@ function AutoHealCell({ incident }) {
   );
 }
 
-export default function IncidentList({ incidents, routers, onSelectRouter }) {
+export default function IncidentList({ incidents, routers, onSelectRouter, onShowImpact }) {
+  const canResolve = useHasRole("operator");
+  const canResetAll = useHasRole("admin");
+  const [sortBy, setSortBy] = useState("updated");
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [layerFilter, setLayerFilter] = useState("all");
@@ -106,7 +153,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
     [incidents]
   );
 
-  const filtered = incidents.filter((i) => {
+  const matching = incidents.filter((i) => {
     if (statusFilter !== "all" && i.status !== statusFilter) return false;
     if (layerFilter !== "all" && i.layer !== layerFilter) return false;
     if (hideSymptomatic && i.root_cause_incident_id != null) return false;
@@ -114,6 +161,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
     if (typeFilter === NEEDS_REVIEW_FILTER) return i.remediation?.action_type === "NOTIFY_ONLY";
     return i.incident_type === typeFilter;
   });
+  const filtered = sortBy === "impact" ? [...matching].sort((a, b) => impactScore(b) - impactScore(a)) : matching;
 
   const openShown = filtered.filter((i) => i.status === "open");
 
@@ -190,6 +238,11 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
           />
           Hide symptomatic
         </label>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+          <option value="updated">Sort: most recent</option>
+          <option value="impact">Sort: customer impact</option>
+        </select>
+        {canResolve && (
         <button
           onClick={handleBulkResolve}
           disabled={openShown.length === 0 || bulkResolving}
@@ -205,6 +258,8 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
         >
           {bulkResolving ? "Resolving…" : `Resolve ${openShown.length} open (shown)`}
         </button>
+        )}
+        {canResetAll && (
         <button
           onClick={handleResetAll}
           disabled={resettingAll}
@@ -221,6 +276,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
         >
           {resettingAll ? "Resetting…" : "Reset ALL open incidents"}
         </button>
+        )}
       </div>
       <div className="table-scroll">
         <table>
@@ -232,6 +288,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
               <th>Router</th>
               <th>Interface</th>
               <th>Status</th>
+              <th>Impact</th>
               <th>Traps</th>
               <th>Description</th>
               <th>Auto-heal</th>
@@ -262,6 +319,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
                       </div>
                     )}
                   </td>
+                  <td><ImpactCell incident={i} onShowImpact={onShowImpact} /></td>
                   <td>{i.trap_count}</td>
                   <td>
                     {i.description}
@@ -274,7 +332,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
                   </td>
                   <td><AutoHealCell incident={i} /></td>
                   <td>
-                    {i.status === "open" && (
+                    {canResolve && i.status === "open" && (
                       <span
                         className="link"
                         style={{ opacity: resolvingIds.has(i.id) ? 0.5 : 1 }}
@@ -289,7 +347,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
             })}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={10}>No incidents match this filter.</td>
+                <td colSpan={11}>No incidents match this filter.</td>
               </tr>
             )}
           </tbody>

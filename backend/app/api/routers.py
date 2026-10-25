@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.bundles import isis_net
 from app.config import settings
+from app.auth import require_admin
 from app.db import get_db
 from app.models import (
     BgpPeering,
@@ -57,7 +58,7 @@ def get_router(router_id: int, db: Session = Depends(get_db)):
     return _to_router_out(obj, attention_ids)
 
 
-@router.delete("/{router_id}")
+@router.delete("/{router_id}", dependencies=[Depends(require_admin)])
 def delete_router(router_id: int, db: Session = Depends(get_db)):
     """Removes a router along with everything that has no meaning once it's
     gone: its trap/incident/backup/remediation history, any BGP peering it
@@ -186,7 +187,7 @@ def get_router_remediation(router_id: int, limit: int = 50, db: Session = Depend
     )
 
 
-@router.post("/seed", response_model=list[RouterOut])
+@router.post("/seed", response_model=list[RouterOut], dependencies=[Depends(require_admin)])
 def seed_routers(routers_in: list[RouterIn], send_boot_trap: bool = False, db: Session = Depends(get_db)):
     """Bulk idempotent insert used by the trap simulator on startup. Customer
     routers carry `parent_mgmt_ip` instead of a DB id (the simulator doesn't

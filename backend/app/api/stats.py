@@ -3,6 +3,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.impact import impact_totals
 from app.models import Incident, IncidentStatus, Router, RouterStatus, RouterType
 from app.schemas import StatsSummary
 
@@ -37,6 +38,8 @@ def summary(db: Session = Depends(get_db)):
         .all()
     )
     incidents_by_type = {incident_type.value: count for incident_type, count in rows}
+    # Fleet-wide, not primary-scoped: the whole point is customer impact.
+    customers_impacted, customers_down = impact_totals(db)
 
     return StatsSummary(
         total_routers=total_routers,
@@ -46,4 +49,6 @@ def summary(db: Session = Depends(get_db)):
         routers_flapping=routers_flapping,
         open_incidents=open_incidents,
         incidents_by_type=incidents_by_type,
+        customers_impacted=customers_impacted,
+        customers_down=customers_down,
     )

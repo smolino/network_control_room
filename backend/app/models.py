@@ -112,6 +112,13 @@ class TeamKind(str, enum.Enum):
     SOC = "soc"
 
 
+class UserRole(str, enum.Enum):
+    # Ordered least -> most privileged; see app.auth.ROLE_RANK.
+    VIEWER = "viewer"  # read-only: map, dashboards, incidents, routers
+    OPERATOR = "operator"  # + resolve incidents, hand them off to SOC/maintenance
+    ADMIN = "admin"  # + fleet changes, teams, simulation, user management
+
+
 class NotificationStatus(str, enum.Enum):
     SENT = "sent"
     SIMULATED = "simulated"  # no SMTP configured - recorded for audit but not actually delivered
@@ -369,3 +376,20 @@ class Interface(Base):
 
     router = relationship("Router")
     bundle = relationship("InterfaceBundle", back_populates="members")
+
+
+class User(Base):
+    """A login account for the web UI/API - see app.auth for password
+    hashing, TOTP verification and the signed bearer tokens issued at
+    login. session_epoch is baked into every token and bumped on password
+    or OTP resets, so those revoke any session already handed out."""
+
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(64), nullable=False, unique=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(Enum(UserRole), default=UserRole.VIEWER, nullable=False)
+    otp_secret = Column(String(64), nullable=True)
+    session_epoch = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

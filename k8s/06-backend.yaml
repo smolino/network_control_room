@@ -49,6 +49,12 @@ spec:
               valueFrom: {secretKeyRef: {name: ncr-secrets, key: NEO4J_USER}}
             - name: NEO4J_PASSWORD
               valueFrom: {secretKeyRef: {name: ncr-secrets, key: NEO4J_PASSWORD}}
+            - name: AUTH_SECRET
+              valueFrom: {secretKeyRef: {name: ncr-secrets, key: AUTH_SECRET}}
+            - name: SERVICE_API_TOKEN
+              valueFrom: {secretKeyRef: {name: ncr-secrets, key: SERVICE_API_TOKEN}}
+            - name: ADMIN_INITIAL_PASSWORD
+              valueFrom: {secretKeyRef: {name: ncr-secrets, key: ADMIN_INITIAL_PASSWORD}}
             - name: KAFKA_BOOTSTRAP_SERVERS
               valueFrom: {configMapKeyRef: {name: ncr-config, key: KAFKA_BOOTSTRAP_SERVERS}}
             - name: NEO4J_URI

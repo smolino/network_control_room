@@ -59,6 +59,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("trap-simulator")
 
 BACKEND_API_URL = os.getenv("BACKEND_API_URL", "http://backend:8000")
+# Bearer token for the backend's admin-only fleet seed endpoints - must match
+# the backend's own SERVICE_API_TOKEN.
+SERVICE_API_TOKEN = os.getenv("SERVICE_API_TOKEN", "")
 TRAP_HOST = os.getenv("TRAP_HOST", "backend")
 TRAP_PORT = int(os.getenv("TRAP_PORT", "1162"))
 COMMUNITY = os.getenv("TRAP_COMMUNITY", "public")
@@ -180,7 +183,9 @@ def _seed_with_retry(url: str, payload: list[dict], what: str) -> None:
     # side, which is what actually produced the duplicate-key 500s below.
     for attempt in range(1, 31):
         try:
-            resp = requests.post(url, json=payload, timeout=120)
+            resp = requests.post(
+                url, json=payload, timeout=120, headers={"Authorization": f"Bearer {SERVICE_API_TOKEN}"}
+            )
             resp.raise_for_status()
             logger.info("Seeded %d %s into the backend", len(resp.json()), what)
             return

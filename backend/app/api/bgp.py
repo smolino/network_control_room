@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.bgp_topology import build_established_adjacency, shortest_reroute_path
 from app.bundles import ensure_bundles_for_peering
+from app.auth import require_admin
 from app.db import get_db
 from app.fiber_faults import active_faults
 from app.models import AlarmLayer, BgpPeering, BgpSessionStatus, Incident, IncidentStatus, InterfaceBundle, Router
@@ -58,7 +59,7 @@ def list_peerings(db: Session = Depends(get_db)):
     return [_to_peering_out(db, p, adjacency) for p in peerings]
 
 
-@router.post("/seed", response_model=list[BgpPeeringOut])
+@router.post("/seed", response_model=list[BgpPeeringOut], dependencies=[Depends(require_admin)])
 def seed_peerings(pairs: list[BgpPeerIn], db: Session = Depends(get_db)):
     """Bulk idempotent insert used by the trap simulator on startup, once
     the routers themselves have already been seeded. Also derives and seeds

@@ -14,6 +14,7 @@ from app.models import (
     RouterStatus,
     RouterType,
     TeamKind,
+    UserRole,
 )
 
 
@@ -88,6 +89,24 @@ class RemediationSummary(BaseModel):
     backup_id: int | None = None
 
 
+class IncidentImpact(BaseModel):
+    """Current blast radius of an open, service-affecting incident - see
+    app.impact. customers_down counts CPE that has actually lost service
+    (its primary is cut off from the backbone, or the CPE itself is down);
+    the rest of customer_count is degraded/at risk only."""
+
+    level: str  # "outage" | "degraded"
+    primary_router_ids: list[int]
+    customer_count: int
+    customers_down: int
+
+
+class IncidentImpactDetail(IncidentImpact):
+    # Every router in the blast radius (primaries + customers) - only on
+    # GET /api/incidents/{id}/impact, for the map highlight.
+    router_ids: list[int]
+
+
 class IncidentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -111,6 +130,8 @@ class IncidentOut(BaseModel):
     layer: AlarmLayer
     peering_id: int | None = None
     root_cause_incident_id: int | None = None
+    # None for resolved and non-service-affecting incidents - see app.impact.
+    impact: IncidentImpact | None = None
 
 
 class BulkResolveIn(BaseModel):
@@ -267,3 +288,66 @@ class StatsSummary(BaseModel):
     routers_flapping: int
     open_incidents: int
     incidents_by_type: dict[str, int]
+    # Distinct customer routers inside the blast radius of any open incident
+    # (see app.impact), and how many of those have actually lost service.
+    customers_impacted: int = 0
+    customers_down: int = 0
+
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+    otp_code: str | None = None
+
+
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    username: str
+    role: UserRole
+    otp_enabled: bool = False
+    created_at: datetime | None = None
+
+    @classmethod
+    def from_user(cls, user) -> "UserOut":
+        return cls(
+            id=user.id, username=user.username, role=user.role, otp_enabled=bool(user.otp_secret), created_at=user.created_at
+        )
+
+
+class LoginOut(BaseModel):
+    token: str
+    user: UserOut
+
+
+class UserCreateIn(BaseModel):
+    username: str
+    password: str
+    role: UserRole = UserRole.VIEWER
+
+
+class UserUpdateIn(BaseModel):
+    role: UserRole | None = None
+    password: str | None = None
+    # Turns off two-factor auth for someone who lost their authenticator.
+    reset_otp: bool = False
+
+
+class PasswordChangeIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class OtpSetupOut(BaseModel):
+    secret: str
+    otpauth_uri: str
+
+
+class OtpEnableIn(BaseModel):
+    secret: str
+    code: str
+
+
+class OtpDisableIn(BaseModel):
+    code: str

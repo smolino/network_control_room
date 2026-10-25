@@ -1,35 +1,83 @@
+import { getToken, UNAUTHORIZED_EVENT } from "./auth.js";
+
 const API_BASE = "/api";
 
-async function getJSON(path) {
-  const resp = await fetch(`${API_BASE}${path}`);
-  if (!resp.ok) throw new Error(`${path} -> ${resp.status}`);
-  return resp.json();
-}
-
-async function postJSON(path, body) {
+// Rejects with the backend's `detail` message when there is one, so callers
+// can show it as-is (e.g. "Requires the admin role"). A 401 on anything but
+// the login call itself means the session is gone - App listens for
+// UNAUTHORIZED_EVENT and drops back to the login screen.
+async function request(method, path, body) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (body !== undefined) headers["Content-Type"] = "application/json";
   const resp = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!resp.ok) throw new Error(`${path} -> ${resp.status}`);
+  if (!resp.ok) {
+    let detail = null;
+    try {
+      detail = (await resp.json()).detail;
+    } catch {
+      // non-JSON error body
+    }
+    if (resp.status === 401 && path !== "/auth/login") {
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    }
+    const err = new Error(typeof detail === "string" ? detail : `${path} -> ${resp.status}`);
+    err.status = resp.status;
+    err.detail = detail;
+    throw err;
+  }
   return resp.json();
 }
 
-async function putJSON(path, body) {
-  const resp = await fetch(`${API_BASE}${path}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) throw new Error(`${path} -> ${resp.status}`);
-  return resp.json();
+const getJSON = (path) => request("GET", path);
+const postJSON = (path, body) => request("POST", path, body);
+const putJSON = (path, body) => request("PUT", path, body);
+const patchJSON = (path, body) => request("PATCH", path, body);
+const deleteJSON = (path) => request("DELETE", path);
+
+// --- auth / users (backend/app/api/auth.py, api/users.py) ---
+
+// Rejects with err.detail === "otp_required" when the account has two-factor
+// auth on and no otpCode was given - ask for it and call again with both.
+export function login(username, password, otpCode) {
+  return postJSON("/auth/login", { username, password, otp_code: otpCode || null });
 }
 
-async function deleteJSON(path) {
-  const resp = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
-  if (!resp.ok) throw new Error(`${path} -> ${resp.status}`);
-  return resp.json();
+export function changeOwnPassword(currentPassword, newPassword) {
+  return postJSON("/auth/password", { current_password: currentPassword, new_password: newPassword });
+}
+
+export function startOtpSetup() {
+  return postJSON("/auth/otp/setup");
+}
+
+export function enableOtp(secret, code) {
+  return postJSON("/auth/otp/enable", { secret, code });
+}
+
+export function disableOtp(code) {
+  return postJSON("/auth/otp/disable", { code });
+}
+
+export function fetchUsers() {
+  return getJSON("/users");
+}
+
+export function createUser({ username, password, role }) {
+  return postJSON("/users", { username, password, role });
+}
+
+export function updateUser(id, changes) {
+  return patchJSON(`/users/${id}`, changes);
+}
+
+export function deleteUser(id) {
+  return deleteJSON(`/users/${id}`);
 }
 
 // City -> coordinates via the backend's Nominatim proxy - for cities that
@@ -79,6 +127,12 @@ export function fetchIncidents({ status, incidentType, routerId, routerType, lim
   if (limit) params.set("limit", limit);
   const qs = params.toString();
   return getJSON(`/incidents${qs ? `?${qs}` : ""}`);
+}
+
+// Current blast radius incl. every affected router id, or null - see
+// backend/app/impact.py.
+export function fetchIncidentImpact(id) {
+  return getJSON(`/incidents/${id}/impact`);
 }
 
 export function fetchStats() {
@@ -173,7 +227,8 @@ export function setSimulationEnabled(enabled) {
 
 export function connectEvents(onMessage) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${protocol}//${window.location.host}/ws/events`);
+  const token = encodeURIComponent(getToken() ?? "");
+  const ws = new WebSocket(`${protocol}//${window.location.host}/ws/events?token=${token}`);
   ws.onmessage = (event) => {
     try {
       onMessage(JSON.parse(event.data));

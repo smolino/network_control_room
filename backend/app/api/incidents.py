@@ -3,7 +3,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.auth import require_admin, require_operator
 from app.db import get_db
+from app.impact import Impact, compute_impacts
 from app.models import (
     AlarmLayer,
     BgpPeering,
@@ -27,6 +29,8 @@ from app.remediation.guidance import generate_analysis
 from app.schemas import (
     BulkResolveIn,
     IncidentAnalysisOut,
+    IncidentImpact,
+    IncidentImpactDetail,
     IncidentNotificationOut,
     IncidentOut,
     NotifyTeamIn,
@@ -53,11 +57,16 @@ def _latest_remediation_by_incident(db: Session, incident_ids: list[int]) -> dic
     return latest
 
 
-def _to_incident_out(incident: Incident, latest_by_incident: dict[int, RemediationAction]) -> IncidentOut:
+def _to_incident_out(
+    incident: Incident, latest_by_incident: dict[int, RemediationAction], impacts: dict[int, Impact] | None = None
+) -> IncidentOut:
     out = IncidentOut.model_validate(incident)
     action = latest_by_incident.get(incident.id)
     if action:
         out.remediation = RemediationSummary.model_validate(action)
+    impact = (impacts or {}).get(incident.id)
+    if impact:
+        out.impact = IncidentImpact(**impact.summary())
     return out
 
 
@@ -92,7 +101,8 @@ def list_incidents(
     incidents = query.order_by(Incident.updated_at.desc()).limit(limit).all()
 
     latest_by_incident = _latest_remediation_by_incident(db, [i.id for i in incidents])
-    return [_to_incident_out(i, latest_by_incident) for i in incidents]
+    impacts = compute_impacts(db, incidents)
+    return [_to_incident_out(i, latest_by_incident, impacts) for i in incidents]
 
 
 @router.get("/{incident_id}", response_model=IncidentOut)
@@ -101,7 +111,19 @@ def get_incident(incident_id: int, db: Session = Depends(get_db)):
     if obj is None:
         raise HTTPException(status_code=404, detail="Incident not found")
     latest_by_incident = _latest_remediation_by_incident(db, [obj.id])
-    return _to_incident_out(obj, latest_by_incident)
+    return _to_incident_out(obj, latest_by_incident, compute_impacts(db, [obj]))
+
+
+@router.get("/{incident_id}/impact", response_model=IncidentImpactDetail | None)
+def get_incident_impact(incident_id: int, db: Session = Depends(get_db)):
+    """Blast radius of this incident right now, including every affected
+    router id (for the map highlight) - null once it's resolved or if its
+    type isn't service-affecting. See app.impact."""
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if incident is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    impact = compute_impacts(db, [incident]).get(incident.id)
+    return impact.detail() if impact else None
 
 
 @router.get("/{incident_id}/tree")
@@ -120,9 +142,10 @@ def get_incident_tree(incident_id: int, db: Session = Depends(get_db)):
 
     symptomatic = db.query(Incident).filter(Incident.root_cause_incident_id == root.id).order_by(Incident.opened_at.asc()).all()
     latest_by_incident = _latest_remediation_by_incident(db, [root.id] + [i.id for i in symptomatic])
+    impacts = compute_impacts(db, [root] + symptomatic)
     return {
-        "root_cause": _to_incident_out(root, latest_by_incident),
-        "symptomatic": [_to_incident_out(i, latest_by_incident) for i in symptomatic],
+        "root_cause": _to_incident_out(root, latest_by_incident, impacts),
+        "symptomatic": [_to_incident_out(i, latest_by_incident, impacts) for i in symptomatic],
     }
 
 
@@ -160,7 +183,7 @@ def get_incident_notifications(incident_id: int, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/{incident_id}/notify", response_model=IncidentNotificationOut)
+@router.post("/{incident_id}/notify", response_model=IncidentNotificationOut, dependencies=[Depends(require_operator)])
 def notify_team(incident_id: int, payload: NotifyTeamIn, db: Session = Depends(get_db)):
     """Sends (or, without SMTP configured, records as simulated) the
     subject/body the operator reviewed and edited in the Human Review tab
@@ -254,7 +277,7 @@ def _router_ws_payload(db_router: Router, needs_attention: bool) -> dict:
     }
 
 
-@router.post("/{incident_id}/resolve", response_model=IncidentOut)
+@router.post("/{incident_id}/resolve", response_model=IncidentOut, dependencies=[Depends(require_operator)])
 async def resolve_incident(incident_id: int, db: Session = Depends(get_db)):
     incident = db.query(Incident).filter(Incident.id == incident_id).first()
     if incident is None:
@@ -313,7 +336,7 @@ async def _resolve_incidents_and_broadcast(db: Session, incidents: list[Incident
         await manager.broadcast(payload)
 
 
-@router.post("/resolve", response_model=list[IncidentOut])
+@router.post("/resolve", response_model=list[IncidentOut], dependencies=[Depends(require_operator)])
 async def bulk_resolve_incidents(payload: BulkResolveIn, db: Session = Depends(get_db)):
     """Resolves every OPEN incident among the given ids in one call - the
     UI uses this for "resolve all currently filtered", e.g. clearing out
@@ -343,7 +366,7 @@ def _restore_link_state(db: Session, now: datetime) -> None:
     db.commit()
 
 
-@router.post("/resolve-all", response_model=list[IncidentOut])
+@router.post("/resolve-all", response_model=list[IncidentOut], dependencies=[Depends(require_admin)])
 async def resolve_all_open_incidents(db: Session = Depends(get_db)):
     """Resolves every OPEN incident system-wide. Distinct from bulk_resolve_
     incidents above: the frontend's incident list is capped (see the `limit`

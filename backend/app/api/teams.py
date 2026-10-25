@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.auth import require_admin
 from app.db import get_db
 from app.models import Team, TeamKind
 from app.schemas import TeamIn, TeamOut
@@ -16,7 +17,7 @@ def list_teams(kind: TeamKind | None = None, db: Session = Depends(get_db)):
     return query.order_by(Team.kind, Team.name).all()
 
 
-@router.post("", response_model=TeamOut)
+@router.post("", response_model=TeamOut, dependencies=[Depends(require_admin)])
 def create_team(payload: TeamIn, db: Session = Depends(get_db)):
     team = Team(kind=payload.kind, name=payload.name, email=payload.email)
     db.add(team)
@@ -25,7 +26,7 @@ def create_team(payload: TeamIn, db: Session = Depends(get_db)):
     return team
 
 
-@router.put("/{team_id}", response_model=TeamOut)
+@router.put("/{team_id}", response_model=TeamOut, dependencies=[Depends(require_admin)])
 def update_team(team_id: int, payload: TeamIn, db: Session = Depends(get_db)):
     team = db.query(Team).filter(Team.id == team_id).first()
     if team is None:
@@ -38,7 +39,7 @@ def update_team(team_id: int, payload: TeamIn, db: Session = Depends(get_db)):
     return team
 
 
-@router.delete("/{team_id}")
+@router.delete("/{team_id}", dependencies=[Depends(require_admin)])
 def delete_team(team_id: int, db: Session = Depends(get_db)):
     team = db.query(Team).filter(Team.id == team_id).first()
     if team is None:

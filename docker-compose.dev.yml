@@ -21,6 +21,8 @@ services:
         condition: service_healthy
     environment:
       BACKEND_API_URL: http://backend:8000
+      # Fails fast instead of crash-looping on 401s from the fleet seed.
+      SERVICE_API_TOKEN: ${SERVICE_API_TOKEN:?set SERVICE_API_TOKEN in .env - see .env.example}
       TRAP_HOST: backend
       TRAP_PORT: 1162
       TRAP_COMMUNITY: public

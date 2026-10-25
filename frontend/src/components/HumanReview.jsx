@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { fetchIncidentAnalysis, fetchIncidentNotifications, notifyIncidentTeam } from "../api.js";
+import { useHasRole } from "../auth.js";
 
 const KIND_LABEL = { maintenance: "Maintenance", soc: "SOC" };
 
@@ -13,6 +14,7 @@ function IncidentReviewRow({ incident, router, teams, onSelectRouter, symptomati
   const [teamId, setTeamId] = useState("");
   const [notifications, setNotifications] = useState([]);
   const [sending, setSending] = useState(false);
+  const canNotify = useHasRole("operator");
 
   const teamsForKind = useMemo(() => teams.filter((t) => t.kind === teamKind), [teams, teamKind]);
 
@@ -112,7 +114,11 @@ function IncidentReviewRow({ incident, router, teams, onSelectRouter, symptomati
                         <option key={t.id} value={t.id}>{t.name} ({t.email})</option>
                       ))}
                     </select>
-                    <button onClick={handleSend} disabled={!teamId || sending}>
+                    <button
+                      onClick={handleSend}
+                      disabled={!canNotify || !teamId || sending}
+                      title={canNotify ? undefined : "Requires the operator role"}
+                    >
                       {sending ? "Sending…" : "Send"}
                     </button>
                   </div>

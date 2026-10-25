@@ -50,5 +50,18 @@ class Settings:
     neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
     neo4j_password: str = os.getenv("NEO4J_PASSWORD", "ncrpassword")
 
+    # Signs the bearer tokens issued by POST /api/auth/login (see app.auth).
+    # If unset, a random per-process secret is generated - fine for a single
+    # backend replica, but every restart logs everyone out.
+    auth_secret: str = os.getenv("AUTH_SECRET", "")
+    auth_token_ttl_hours: int = int(os.getenv("AUTH_TOKEN_TTL_HOURS", "12"))
+    # Password for the `admin` account seeded on first start, when the users
+    # table is still empty. Change it from Settings > Users right after.
+    admin_initial_password: str = os.getenv("ADMIN_INITIAL_PASSWORD", "adminadmin")
+    # Static bearer token for non-human callers (the trap simulator's fleet
+    # seed, scripts/import-fleet.py) - grants the admin role. Service auth
+    # is disabled entirely while this is unset.
+    service_api_token: str = os.getenv("SERVICE_API_TOKEN", "")
+
 
 settings = Settings()

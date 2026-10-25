@@ -1,5 +1,6 @@
 import { Fragment, useMemo, useState } from "react";
 import { deleteRouter } from "../api.js";
+import { useHasRole } from "../auth.js";
 
 const STATUS_ORDER = ["up", "down", "flapping", "unknown"];
 const UNASSIGNED = "unassigned";
@@ -39,6 +40,7 @@ export default function RouterList({ routers, selectedRouterId, onSelectRouter, 
   const [filter, setFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("primary");
   const [deletingId, setDeletingId] = useState(null);
+  const canDelete = useHasRole("admin");
   const [collapsed, setCollapsed] = useState(() => new Set());
 
   const routerById = useMemo(() => Object.fromEntries(routers.map((r) => [r.id, r])), [routers]);
@@ -173,9 +175,11 @@ export default function RouterList({ routers, selectedRouterId, onSelectRouter, 
                         <td><span className={`badge ${r.status}`}>{r.status}</span></td>
                         <td>{r.last_seen_at ? new Date(r.last_seen_at).toLocaleString() : "never"}</td>
                         <td>
-                          <span className="link" onClick={(e) => handleDelete(e, r)}>
-                            {deletingId === r.id ? "Removing…" : "Remove"}
-                          </span>
+                          {canDelete && (
+                            <span className="link" onClick={(e) => handleDelete(e, r)}>
+                              {deletingId === r.id ? "Removing…" : "Remove"}
+                            </span>
+                          )}
                         </td>
                       </tr>
                     ))}

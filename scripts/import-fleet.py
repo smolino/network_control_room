@@ -10,6 +10,9 @@ api/bgp.py:seed_peerings).
 Usage (stdlib only, no pip install needed):
     ./scripts/import-fleet.py                         # http://localhost:8000
     ./scripts/import-fleet.py https://controlroom.point2point.org.uk
+
+The seed endpoints are admin-only: export SERVICE_API_TOKEN (the same value
+the backend runs with) before running this.
 """
 import csv
 import json
@@ -30,7 +33,13 @@ def read_csv(path: str) -> list[dict]:
 
 def post(url: str, payload: list[dict]) -> list:
     req = urllib.request.Request(
-        url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST"
+        url,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {os.environ.get('SERVICE_API_TOKEN', '')}",
+        },
+        method="POST",
     )
     with urllib.request.urlopen(req, timeout=300) as resp:
         return json.load(resp)

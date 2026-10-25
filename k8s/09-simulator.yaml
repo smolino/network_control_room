@@ -29,6 +29,8 @@ spec:
             - {name: TRAP_HOST, value: backend}
             - name: BACKEND_API_URL
               valueFrom: {configMapKeyRef: {name: ncr-config, key: BACKEND_API_URL}}
+            - name: SERVICE_API_TOKEN
+              valueFrom: {secretKeyRef: {name: ncr-secrets, key: SERVICE_API_TOKEN}}
             - name: TRAP_PORT
               valueFrom: {configMapKeyRef: {name: ncr-config, key: TRAP_PORT}}
             - name: TRAP_COMMUNITY

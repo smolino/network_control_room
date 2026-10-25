@@ -28,6 +28,18 @@ export default function Dashboard({ stats, incidents }) {
           <div className="value">{stats.open_incidents}</div>
           <div className="label">Open incidents</div>
         </div>
+        <div className="card" title="Distinct customer routers inside the blast radius of an open incident">
+          <div className="value" style={{ color: stats.customers_impacted ? "#facc15" : undefined }}>
+            {stats.customers_impacted}
+          </div>
+          <div className="label">Customers impacted</div>
+        </div>
+        <div className="card" title="Impacted customers that have actually lost service">
+          <div className="value" style={{ color: stats.customers_down ? "#f87171" : undefined }}>
+            {stats.customers_down}
+          </div>
+          <div className="label">Customers down</div>
+        </div>
       </div>
 
       <h3>Incidents by type</h3>

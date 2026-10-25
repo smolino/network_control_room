@@ -1,10 +1,30 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
-import { createTeam, deleteTeam, fetchSimulationStatus, setSimulationEnabled, updateTeam } from "../api.js";
-import { buildOtpAuthUri, generateSecret, verifyTOTP } from "../totp.js";
-import { createUser, deleteUser, getUser, getUsers, setOtpSecret, updatePassword } from "../users.js";
+import {
+  changeOwnPassword,
+  createTeam,
+  createUser,
+  deleteTeam,
+  deleteUser,
+  disableOtp,
+  enableOtp,
+  fetchSimulationStatus,
+  fetchUsers,
+  setSimulationEnabled,
+  startOtpSetup,
+  updateTeam,
+  updateUser,
+} from "../api.js";
+import { loadSession, ROLES, useCurrentUser, useHasRole } from "../auth.js";
 
-export default function SettingsPanel({ currentUser, teams, onTeamsChanged, onClose }) {
+const ROLE_HINT = {
+  viewer: "read-only",
+  operator: "+ resolve incidents, notify teams",
+  admin: "+ fleet, teams, simulation, users",
+};
+
+export default function SettingsPanel({ teams, onTeamsChanged, onSessionChanged, onClose }) {
+  const isAdmin = useHasRole("admin");
   const [tab, setTab] = useState("security");
 
   return (
@@ -21,9 +41,11 @@ export default function SettingsPanel({ currentUser, teams, onTeamsChanged, onCl
           <button className={tab === "security" ? "active" : ""} onClick={() => setTab("security")}>
             Security
           </button>
-          <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>
-            Users
-          </button>
+          {isAdmin && (
+            <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>
+              Users
+            </button>
+          )}
           <button className={tab === "teams" ? "active" : ""} onClick={() => setTab("teams")}>
             Teams
           </button>
@@ -32,8 +54,8 @@ export default function SettingsPanel({ currentUser, teams, onTeamsChanged, onCl
           </button>
         </div>
 
-        {tab === "security" && <SecurityTab currentUser={currentUser} />}
-        {tab === "users" && <UsersTab currentUser={currentUser} />}
+        {tab === "security" && <SecurityTab onSessionChanged={onSessionChanged} />}
+        {tab === "users" && isAdmin && <UsersTab />}
         {tab === "teams" && <TeamsTab teams={teams} onChanged={onTeamsChanged} />}
         {tab === "simulation" && <SimulationTab />}
       </div>
@@ -41,31 +63,90 @@ export default function SettingsPanel({ currentUser, teams, onTeamsChanged, onCl
   );
 }
 
-function SecurityTab({ currentUser }) {
-  const [enabled, setEnabled] = useState(() => !!getUser(currentUser)?.otpSecret);
-  const [setupSecret, setSetupSecret] = useState(null);
+function ChangePasswordForm({ onSessionChanged }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setDone(false);
+    if (next !== confirm) {
+      setError("Passwords don't match");
+      return;
+    }
+    try {
+      // Revokes every other session; the response carries this tab's new token.
+      onSessionChanged(await changeOwnPassword(current, next));
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+      setDone(true);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  return (
+    <form className="otp-setup" onSubmit={handleSubmit}>
+      <label>
+        Current password
+        <input type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
+      </label>
+      <label>
+        New password
+        <input type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} />
+      </label>
+      <label>
+        Confirm new password
+        <input type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+      </label>
+      {error && <div className="login-error">{error}</div>}
+      {done && <p className="settings-hint">Password changed. Your other sessions have been signed out.</p>}
+      <button type="submit" className="login-submit">
+        Change password
+      </button>
+    </form>
+  );
+}
+
+function SecurityTab({ onSessionChanged }) {
+  const currentUser = useCurrentUser();
+  const enabled = currentUser.otp_enabled;
+  const [setup, setSetup] = useState(null);
   const [qrDataUrl, setQrDataUrl] = useState(null);
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [disableCode, setDisableCode] = useState("");
 
   useEffect(() => {
-    if (!setupSecret) {
+    if (!setup) {
       setQrDataUrl(null);
       return;
     }
-    const uri = buildOtpAuthUri(setupSecret, { accountName: currentUser });
-    QRCode.toDataURL(uri, { margin: 1, width: 220 }).then(setQrDataUrl);
-  }, [setupSecret, currentUser]);
+    QRCode.toDataURL(setup.otpauth_uri, { margin: 1, width: 220 }).then(setQrDataUrl);
+  }, [setup]);
 
-  const startSetup = () => {
+  // OTP changes only touch the user object - the token stays valid.
+  const updateCurrentUser = (user) => {
+    onSessionChanged({ ...loadSession(), user });
+  };
+
+  const startSetup = async () => {
     setError("");
     setCode("");
-    setSetupSecret(generateSecret());
+    try {
+      setSetup(await startOtpSetup());
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   const cancelSetup = () => {
-    setSetupSecret(null);
+    setSetup(null);
     setCode("");
     setError("");
   };
@@ -73,64 +154,56 @@ function SecurityTab({ currentUser }) {
   const confirmSetup = async (e) => {
     e.preventDefault();
     try {
-      const ok = await verifyTOTP(setupSecret, code);
-      if (!ok) {
-        setError("Incorrect code — check your authenticator app and try again");
-        return;
-      }
-      setOtpSecret(currentUser, setupSecret);
-      setEnabled(true);
-      setSetupSecret(null);
+      updateCurrentUser(await enableOtp(setup.secret, code));
+      setSetup(null);
       setCode("");
       setError("");
     } catch (err) {
-      setError(`Couldn't verify that code: ${err.message}`);
+      setError(err.message);
     }
   };
 
-  const disableOtp = async (e) => {
+  const handleDisable = async (e) => {
     e.preventDefault();
     try {
-      const secret = getUser(currentUser)?.otpSecret;
-      const ok = await verifyTOTP(secret, disableCode);
-      if (!ok) {
-        setError("Incorrect code — enter your current 6-digit code to disable OTP");
-        return;
-      }
-      setOtpSecret(currentUser, null);
-      setEnabled(false);
+      updateCurrentUser(await disableOtp(disableCode));
       setDisableCode("");
       setError("");
     } catch (err) {
-      setError(`Couldn't verify that code: ${err.message}`);
+      setError(err.message);
     }
   };
 
   return (
     <>
+      <p className="settings-hint">
+        Signed in as <strong>{currentUser.username}</strong> with the <strong>{currentUser.role}</strong> role (
+        {ROLE_HINT[currentUser.role]}).
+      </p>
+
       <h3>One-time password (OTP)</h3>
 
-      {!enabled && !setupSecret && (
+      {!enabled && !setup && (
         <>
           <p className="settings-hint">
-            Two-factor authentication for <strong>{currentUser}</strong> is currently{" "}
-            <strong>disabled</strong>. Enable it to require a 6-digit authenticator code at login, in
-            addition to the password.
+            Two-factor authentication is currently <strong>disabled</strong>. Enable it to require a 6-digit
+            authenticator code at login, in addition to the password.
           </p>
+          {error && <div className="login-error">{error}</div>}
           <button className="login-submit" onClick={startSetup}>
             Enable OTP
           </button>
         </>
       )}
 
-      {!enabled && setupSecret && (
+      {!enabled && setup && (
         <form onSubmit={confirmSetup} className="otp-setup">
           <p className="settings-hint">
             Scan this QR code with an authenticator app (Google Authenticator, Authy, 1Password,
             etc.), or enter the key manually.
           </p>
           {qrDataUrl && <img className="otp-qr" src={qrDataUrl} alt="OTP QR code" />}
-          <code className="otp-secret">{setupSecret}</code>
+          <code className="otp-secret">{setup.secret}</code>
           <label>
             Enter the 6-digit code from your app to confirm
             <input
@@ -157,10 +230,10 @@ function SecurityTab({ currentUser }) {
       {enabled && (
         <>
           <p className="settings-hint">
-            Two-factor authentication for <strong>{currentUser}</strong> is currently{" "}
-            <strong>enabled</strong>. You'll be asked for a 6-digit code after your password at login.
+            Two-factor authentication is currently <strong>enabled</strong>. You'll be asked for a 6-digit
+            code after your password at login.
           </p>
-          <form onSubmit={disableOtp} className="otp-setup">
+          <form onSubmit={handleDisable} className="otp-setup">
             <label>
               Enter your current 6-digit code to disable OTP
               <input
@@ -178,77 +251,85 @@ function SecurityTab({ currentUser }) {
           </form>
         </>
       )}
+
+      <h3>Password</h3>
+      <ChangePasswordForm onSessionChanged={onSessionChanged} />
     </>
   );
 }
 
-function UsersTab({ currentUser }) {
-  const [users, setUsers] = useState(() => getUsers());
+function UsersTab() {
+  const currentUser = useCurrentUser();
+  const [users, setUsers] = useState([]);
   const [error, setError] = useState("");
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [newRole, setNewRole] = useState("viewer");
   const [resetTarget, setResetTarget] = useState(null);
   const [resetPassword, setResetPassword] = useState("");
 
-  const refresh = () => setUsers(getUsers());
+  const refresh = () =>
+    fetchUsers()
+      .then(setUsers)
+      .catch((err) => setError(err.message));
 
-  const handleCreate = (e) => {
-    e.preventDefault();
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  // Every action below reports the backend's own refusal (last admin,
+  // deleting yourself, weak password, ...) rather than duplicating its rules.
+  const run = async (action) => {
     setError("");
+    try {
+      await action();
+      await refresh();
+      return true;
+    } catch (err) {
+      setError(err.message);
+      return false;
+    }
+  };
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
     if (newPassword !== confirmPassword) {
       setError("Passwords don't match");
       return;
     }
-    try {
-      createUser(newUsername, newPassword);
+    const ok = await run(() => createUser({ username: newUsername, password: newPassword, role: newRole }));
+    if (ok) {
       setNewUsername("");
       setNewPassword("");
       setConfirmPassword("");
-      refresh();
-    } catch (err) {
-      setError(err.message);
+      setNewRole("viewer");
     }
   };
 
-  const handleDelete = (username) => {
-    if (!window.confirm(`Delete user "${username}"? This can't be undone.`)) return;
-    setError("");
-    try {
-      deleteUser(username);
-      refresh();
-    } catch (err) {
-      setError(err.message);
-    }
+  const handleRoleChange = (u, role) => run(() => updateUser(u.id, { role }));
+
+  const handleDelete = (u) => {
+    if (!window.confirm(`Delete user "${u.username}"? This can't be undone.`)) return;
+    run(() => deleteUser(u.id));
   };
 
-  const handleResetOtp = (username) => {
+  const handleResetOtp = (u) => {
     if (
       !window.confirm(
-        `Turn off two-factor authentication for "${username}"? Use this if they lost access to their authenticator app.`
+        `Turn off two-factor authentication for "${u.username}"? Use this if they lost access to their authenticator app. It also signs them out everywhere.`
       )
     )
       return;
-    setOtpSecret(username, null);
-    refresh();
+    run(() => updateUser(u.id, { reset_otp: true }));
   };
 
-  const startResetPassword = (username) => {
-    setResetTarget(username);
-    setResetPassword("");
-    setError("");
-  };
-
-  const handleResetPassword = (e) => {
+  const handleResetPassword = async (e) => {
     e.preventDefault();
-    setError("");
-    try {
-      updatePassword(resetTarget, resetPassword);
+    const ok = await run(() => updateUser(resetTarget.id, { password: resetPassword }));
+    if (ok) {
       setResetTarget(null);
       setResetPassword("");
-      refresh();
-    } catch (err) {
-      setError(err.message);
     }
   };
 
@@ -263,38 +344,46 @@ function UsersTab({ currentUser }) {
           <thead>
             <tr>
               <th>Username</th>
+              <th>Role</th>
               <th>OTP</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {users.map((u) => (
-              <tr key={u.username}>
+              <tr key={u.id}>
                 <td>
                   {u.username}
-                  {u.username === currentUser && <span className="you-tag"> (you)</span>}
+                  {u.id === currentUser.id && <span className="you-tag"> (you)</span>}
                 </td>
                 <td>
-                  {u.otpSecret ? (
+                  <select value={u.role} onChange={(e) => handleRoleChange(u, e.target.value)}>
+                    {ROLES.map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </td>
+                <td>
+                  {u.otp_enabled ? (
                     <span className="badge up">enabled</span>
                   ) : (
                     <span className="badge unknown">disabled</span>
                   )}
                 </td>
                 <td className="users-table-actions">
-                  <button type="button" onClick={() => startResetPassword(u.username)}>
+                  <button type="button" onClick={() => { setResetTarget(u); setResetPassword(""); setError(""); }}>
                     Reset password
                   </button>
-                  {u.otpSecret && u.username !== currentUser && (
-                    <button type="button" onClick={() => handleResetOtp(u.username)}>
+                  {u.otp_enabled && u.id !== currentUser.id && (
+                    <button type="button" onClick={() => handleResetOtp(u)}>
                       Reset OTP
                     </button>
                   )}
                   <button
                     type="button"
-                    onClick={() => handleDelete(u.username)}
-                    disabled={u.username === currentUser || users.length <= 1}
-                    title={u.username === currentUser ? "Can't delete the account you're signed in as" : undefined}
+                    onClick={() => handleDelete(u)}
+                    disabled={u.id === currentUser.id}
+                    title={u.id === currentUser.id ? "Can't delete the account you're signed in as" : undefined}
                   >
                     Delete
                   </button>
@@ -308,7 +397,7 @@ function UsersTab({ currentUser }) {
       {resetTarget && (
         <form className="otp-setup reset-password-form" onSubmit={handleResetPassword}>
           <label>
-            New password for {resetTarget}
+            New password for {resetTarget.username} (signs them out everywhere)
             <input
               type="password"
               autoFocus
@@ -332,6 +421,14 @@ function UsersTab({ currentUser }) {
         <label>
           Username
           <input type="text" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} />
+        </label>
+        <label>
+          Role
+          <select value={newRole} onChange={(e) => setNewRole(e.target.value)}>
+            {ROLES.map((r) => (
+              <option key={r} value={r}>{r} — {ROLE_HINT[r]}</option>
+            ))}
+          </select>
         </label>
         <label>
           Password
@@ -360,6 +457,7 @@ function UsersTab({ currentUser }) {
 const TEAM_KIND_LABEL = { maintenance: "Maintenance", soc: "SOC" };
 
 function TeamList({ kind, teams, onChanged }) {
+  const isAdmin = useHasRole("admin");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [editingId, setEditingId] = useState(null);
@@ -437,8 +535,12 @@ function TeamList({ kind, teams, onChanged }) {
                     <td>{team.name}</td>
                     <td>{team.email}</td>
                     <td>
-                      <span className="link" onClick={() => startEdit(team)}>Edit</span>{" "}
-                      <span className="link" onClick={() => handleDelete(team)}>Remove</span>
+                      {isAdmin && (
+                        <>
+                          <span className="link" onClick={() => startEdit(team)}>Edit</span>{" "}
+                          <span className="link" onClick={() => handleDelete(team)}>Remove</span>
+                        </>
+                      )}
                     </td>
                   </>
                 )}
@@ -452,6 +554,7 @@ function TeamList({ kind, teams, onChanged }) {
           </tbody>
         </table>
       </div>
+      {isAdmin && (
       <form onSubmit={handleAdd} style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", marginTop: "0.6rem" }}>
         <input
           placeholder="Team name"
@@ -468,6 +571,7 @@ function TeamList({ kind, teams, onChanged }) {
         />
         <button type="submit" disabled={saving}>Add</button>
       </form>
+      )}
     </div>
   );
 }
@@ -484,6 +588,7 @@ function TeamsTab({ teams, onChanged }) {
 }
 
 function SimulationTab() {
+  const isAdmin = useHasRole("admin");
   const [enabled, setEnabled] = useState(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -523,9 +628,13 @@ function SimulationTab() {
               ? "It's generating SNMP traps across the fleet (link flaps, BGP/CPU/temperature events, etc.)."
               : "No new traps are being sent - existing routers, incidents, and backups are untouched."}
           </p>
-          <button className="login-submit" onClick={toggle} disabled={saving}>
-            {saving ? "Saving…" : enabled ? "Pause simulation" : "Resume simulation"}
-          </button>
+          {isAdmin ? (
+            <button className="login-submit" onClick={toggle} disabled={saving}>
+              {saving ? "Saving…" : enabled ? "Pause simulation" : "Resume simulation"}
+            </button>
+          ) : (
+            <p className="settings-hint">Only admins can pause or resume the simulation.</p>
+          )}
         </>
       )}
     </>

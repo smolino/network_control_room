@@ -116,6 +116,10 @@ incident type; topology graph → root cause; incident type → playbook).
 
 ## Running it
 
+First copy `.env.example` to `.env` and fill in `AUTH_SECRET` and
+`SERVICE_API_TOKEN` (see "Users and roles" below) - the dev overlay refuses
+to start without the latter.
+
 Local dev (includes the trap simulator, which seeds and drives the fake
 router fleet):
 
@@ -138,6 +142,7 @@ BGP links, import `seed/routers.csv` and
 `seed/bgp_links.csv` once the stack is up:
 
 ```bash
+export SERVICE_API_TOKEN=...                                 # same value the backend runs with
 ./scripts/import-fleet.py                                    # against http://localhost:8000
 ./scripts/import-fleet.py https://controlroom.point2point.org.uk
 ```
@@ -147,7 +152,9 @@ them from the UI (Add Fleet → Bulk upload: routers first, then links). The
 script is idempotent and posts in 500-row chunks.
 
 Then open:
-- **http://localhost** — the web UI (map, dashboard, routers, incidents)
+- **http://localhost** — the web UI (map, dashboard, routers, incidents);
+  sign in as `admin` / `adminadmin` (or `ADMIN_INITIAL_PASSWORD`) and change
+  that password under Settings → Security
 - **http://localhost:8000/docs** — the backend's interactive API docs
 - **http://localhost:7474** — the Neo4j browser, useful for poking at the
   topology graph directly (e.g. `MATCH (s:FiberSpan) RETURN count(s)`);
@@ -366,6 +373,66 @@ interface) — a real deployment would need the fuller topology
 (transponders, ROADMs, individual amplifiers as their own graph nodes)
 that the design doc this app follows calls out as the hardest, most-
 often-underinvested-in part of a real system.
+
+## Customer impact (blast radius)
+
+Every open, service-affecting incident (link down/flap, BGP, BFD, IS-IS,
+optical, PSU) carries an `impact` - which customers it puts at risk right
+now, computed by `backend/app/impact.py` from the two-tier topology:
+
+- **Scope** — an incident on a primary covers that primary's ~10
+  single-homed customers; a peering-scoped L1 fiber incident covers both
+  endpoint primaries' customers; an incident on a customer router covers
+  just that customer.
+- **Level** — a customer in scope is **down** when its primary is cut off
+  from the backbone (the router itself is DOWN, or it has dropped out of
+  the BGP mesh's largest connected component) or the CPE itself is DOWN.
+  Any down customer makes the incident an **outage**; otherwise it's
+  **degraded** (still reachable, reduced redundancy). "Down" is about the
+  customer's current state, not about which incident caused it - a fiber
+  cut whose endpoint primary is DOWN for an unrelated reason still reports
+  those customers as down, since they are.
+
+It's computed on read from live router/BGP state rather than stored, so it
+tracks the network as it changes and needs no schema migration. Resolved
+incidents and control/management events (CPU, auth, config change, ...)
+have none.
+
+In the UI: an **Impact** column on both incident tabs with a "Sort:
+customer impact" option, **Show on map** (rings every router in the blast
+radius and zooms to it, via `GET /api/incidents/{id}/impact`), and
+"customers impacted / down" totals on the top bar and Dashboard (deduped
+across incidents, from `/api/stats/summary`).
+
+## Users and roles
+
+Accounts live in Postgres (`users` table), not the browser. Passwords are
+PBKDF2-hashed, two-factor auth (TOTP) is verified server-side, and
+`POST /api/auth/login` returns a signed bearer token (HMAC with
+`AUTH_SECRET`, `AUTH_TOKEN_TTL_HOURS` lifetime) that every API call and the
+`/ws/events` WebSocket (`?token=`) must present. See `backend/app/auth.py`.
+
+| Role | Can |
+|---|---|
+| `viewer` | See everything: map, dashboard, routers, incidents, Human Review analysis |
+| `operator` | + resolve incidents (single and bulk), send incidents to SOC/maintenance teams |
+| `admin` | + Add Fleet / remove routers / create BGP links, router models, teams, pause/resume simulation, "Reset ALL open incidents", manage users and roles |
+
+Checks are enforced on the backend (`require_role` in `app/auth.py`); the
+UI only hides what a role can't use. Each request re-reads the user, so a
+role change or deletion applies immediately, and resetting someone's
+password or OTP signs them out everywhere. The last admin can't be demoted
+or deleted.
+
+On first start (empty `users` table) an `admin` account is created with
+`ADMIN_INITIAL_PASSWORD` (default `adminadmin`) - change it right away.
+Users and OTP secrets from the old browser-only login aren't migrated;
+recreate them under Settings → Users.
+
+Non-human callers - the simulator's startup seed and
+`scripts/import-fleet.py` - send `Authorization: Bearer $SERVICE_API_TOKEN`,
+which counts as admin. `GET /api/simulation/status` and `/api/health` are
+the only unauthenticated endpoints.
 
 ## Auto-heal
 
@@ -713,6 +780,10 @@ python3 generate_customer_routers.py   # rewrites customer_routers_seed.json (10
 | `KAFKA_BOOTSTRAP_SERVERS` | backend, normalizer, correlator | `kafka:9092` | Kafka broker address for the alarm pipeline (see "Alarm pipeline" above) |
 | `NEO4J_URI` | backend, correlator | `bolt://neo4j:7687` | Topology graph connection - written by `backend` (on BGP seed), read by `correlator` (root-cause lookups) |
 | `NEO4J_USER` / `NEO4J_PASSWORD` | backend, correlator | `neo4j` / `ncrpassword` | Neo4j credentials the app connects with. `NEO4J_PASSWORD` also drives the `neo4j` service's own `NEO4J_AUTH` in `docker-compose.yml` (`${NEO4J_PASSWORD:-ncrpassword}`), so changing it in `.env` updates both sides from one value; `NEO4J_USER` only changes what the app sends - the server's admin username is always `neo4j` (the image's own default), so leave it as-is unless you also change that server-side |
+| `AUTH_SECRET` | backend | random per process | Signs login tokens. Set it, or every backend restart signs everyone out (and multiple replicas won't accept each other's tokens) |
+| `AUTH_TOKEN_TTL_HOURS` | backend | `12` | How long a login lasts |
+| `SERVICE_API_TOKEN` | backend, simulator, `import-fleet.py` | unset (service auth off) | Admin-level bearer token for automation - see "Users and roles". Required by `docker-compose.dev.yml` |
+| `ADMIN_INITIAL_PASSWORD` | backend | `adminadmin` | Password for the `admin` account created on a fresh database |
 | `HTTP_PORT` | frontend (host side) | `80` | Host port `frontend` publishes (plain HTTP); set e.g. `127.0.0.1:8080` behind the external nginx (see "HTTPS / reverse proxy") |
 | `FIBER_FAULT_SIMULATION` | backend | `false` | Run the synthetic fiber-cut generator (`app/fiber_faults.py`: fake OPTICAL_ALARM + IS-IS flaps every 15-40s). Dev/demo only - `docker-compose.dev.yml` and `k8s/02-configmap.yaml` set it to `true` |
 | `NOMINATIM_URL` | backend | `https://nominatim.openstreetmap.org` | Geocoder behind `GET /api/geocode`, which Add Fleet uses to fill latitude/longitude for cities not in its built-in list. The backend needs outbound internet access to reach it; point this at a self-hosted Nominatim to avoid the public instance's 1 request/s limit |
