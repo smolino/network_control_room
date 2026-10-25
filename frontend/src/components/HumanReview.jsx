@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { fetchIncidentAnalysis, fetchIncidentNotifications, notifyIncidentTeam } from "../api.js";
+import { useEffect, useMemo, useState } from "react";
+import { fetchIncidentAnalysis, fetchIncidentNotifications, fetchIncidents, notifyIncidentTeam } from "../api.js";
 import { useHasRole } from "../auth.js";
 
 const KIND_LABEL = { maintenance: "Maintenance", soc: "SOC" };
@@ -168,9 +168,42 @@ function IncidentReviewRow({ incident, router, teams, onSelectRouter, symptomati
 export default function HumanReview({ incidents, routers, teams, onSelectRouter }) {
   const routerById = useMemo(() => Object.fromEntries(routers.map((r) => [r.id, r])), [routers]);
 
-  const needsReview = incidents.filter(
+  // App's `incidents` only holds the 200 most recently updated incidents - a
+  // few minutes' worth with the simulator running - so open incidents that
+  // need review would drop out of it (unmounting their row and collapsing an
+  // expanded "Describe issue" panel). Load every open incident here and
+  // overlay App's list on top, which carries the live WebSocket updates.
+  const [openIncidents, setOpenIncidents] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      fetchIncidents({ status: "open", limit: 2000 })
+        .then((list) => !cancelled && setOpenIncidents(list))
+        .catch(console.error);
+    load();
+    const timer = setInterval(load, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const allIncidents = useMemo(() => {
+    const byId = new Map(openIncidents.map((i) => [i.id, i]));
+    for (const i of incidents) byId.set(i.id, { ...byId.get(i.id), ...i });
+    return [...byId.values()].sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""));
+  }, [openIncidents, incidents]);
+
+  const needsReview = allIncidents.filter(
     (i) => i.status === "open" && i.remediation?.action_type === "NOTIFY_ONLY"
   );
+  const symptomaticCounts = useMemo(() => {
+    const counts = {};
+    for (const i of allIncidents) {
+      if (i.root_cause_incident_id) counts[i.root_cause_incident_id] = (counts[i.root_cause_incident_id] ?? 0) + 1;
+    }
+    return counts;
+  }, [allIncidents]);
 
   return (
     <div className="page">
@@ -199,7 +232,7 @@ export default function HumanReview({ incidents, routers, teams, onSelectRouter 
                 router={routerById[incident.router_id]}
                 teams={teams}
                 onSelectRouter={onSelectRouter}
-                symptomaticCount={incidents.filter((i) => i.root_cause_incident_id === incident.id).length}
+                symptomaticCount={symptomaticCounts[incident.id] ?? 0}
               />
             ))}
             {needsReview.length === 0 && (
