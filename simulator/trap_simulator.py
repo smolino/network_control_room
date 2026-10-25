@@ -87,6 +87,10 @@ BUNDLE_FAILURE_INTERVAL_SECONDS = float(os.getenv("BUNDLE_FAILURE_INTERVAL_SECON
 # How often to poll the backend's simulation on/off flag (toggled from the
 # frontend's Settings > Simulation tab) - see simulation_control_loop.
 SIMULATION_POLL_SECONDS = float(os.getenv("SIMULATION_POLL_SECONDS", "3"))
+# How often to re-read the fleet (routers, BGP links and their bundles) from
+# the backend, so routers added from the UI or by bulk upload start getting
+# traps too - see Fleet / fleet_refresh_loop.
+FLEET_REFRESH_SECONDS = float(os.getenv("FLEET_REFRESH_SECONDS", "120"))
 
 # Optimistic default so traps flow immediately on startup, before the first
 # poll lands; simulation_control_loop corrects this from the backend's
@@ -171,6 +175,81 @@ def build_customer_facing_interfaces(routers: list[dict], customers: list[dict])
     return {
         r["mgmt_ip"]: [customer_interface(c) for c in customers_by_parent.get(r["mgmt_ip"], [])] for r in routers
     }
+
+
+class Fleet:
+    """What the event loops pick routers/links from. Starts as the seed
+    files' fleet, then mirrors the backend's actual fleet (see
+    fetch_fleet_from_backend) so everything on the map is simulated - not
+    just the routers this container seeded itself. Updated in place, so
+    long-running loops always see the latest version."""
+
+    def __init__(self, primaries: list[dict], customers: list[dict], peer_adjacency: dict, bgp_bundles: dict) -> None:
+        self.update(primaries, customers, peer_adjacency, bgp_bundles)
+
+    def update(self, primaries: list[dict], customers: list[dict], peer_adjacency: dict, bgp_bundles: dict) -> None:
+        self.primaries = primaries
+        self.customers = customers
+        self.peer_adjacency = peer_adjacency
+        self.bgp_bundles = bgp_bundles
+        self.primary_interfaces = build_customer_facing_interfaces(primaries, customers)
+
+
+def _get_with_auth(path: str):
+    resp = requests.get(
+        f"{BACKEND_API_URL}{path}", timeout=60, headers={"Authorization": f"Bearer {SERVICE_API_TOKEN}"}
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def fetch_fleet_from_backend() -> tuple[list[dict], list[dict], dict, dict]:
+    """(primaries, customers, peer_adjacency, bgp_bundles) as the backend
+    has them right now. Bundle/member names come from the backend's own
+    InterfaceBundle rows rather than being re-derived here, so an IS-IS
+    trap always names an interface the backend (and its topology graph)
+    knows belongs to that exact peering - links added after the initial
+    seed don't follow the sorted-peer numbering (see backend/app/bundles.py)."""
+    routers = _get_with_auth("/api/routers")
+    peerings = _get_with_auth("/api/bgp/peerings")
+    by_id = {r["id"]: r for r in routers}
+
+    def slim(r: dict) -> dict:
+        return {"hostname": r["hostname"], "mgmt_ip": r["mgmt_ip"]}
+
+    primaries = [slim(r) for r in routers if r["router_type"] == "primary"]
+    customers = [
+        {**slim(r), "parent_mgmt_ip": by_id[r["parent_router_id"]]["mgmt_ip"]}
+        for r in routers
+        if r["router_type"] == "customer" and r.get("parent_router_id") in by_id
+    ]
+    peer_adjacency: dict[str, list[str]] = {}
+    bgp_bundles: dict[str, dict[str, dict]] = {}
+    for p in peerings:
+        a, b = by_id.get(p["router_a_id"]), by_id.get(p["router_b_id"])
+        if a is None or b is None:
+            continue
+        peer_adjacency.setdefault(a["mgmt_ip"], []).append(b["mgmt_ip"])
+        peer_adjacency.setdefault(b["mgmt_ip"], []).append(a["mgmt_ip"])
+        for side, peer, bundle in ((a, b, p.get("bundle_a")), (b, a, p.get("bundle_b"))):
+            if bundle:
+                bgp_bundles.setdefault(side["mgmt_ip"], {})[peer["mgmt_ip"]] = {
+                    "bundle": bundle["name"],
+                    "members": [m["name"] for m in bundle["members"]],
+                }
+    return primaries, customers, peer_adjacency, bgp_bundles
+
+
+async def fleet_refresh_loop(fleet: Fleet) -> None:
+    while True:
+        await asyncio.sleep(FLEET_REFRESH_SECONDS)
+        try:
+            before = (len(fleet.primaries), len(fleet.customers))
+            fleet.update(*await asyncio.to_thread(fetch_fleet_from_backend))
+            if (len(fleet.primaries), len(fleet.customers)) != before:
+                logger.info("Fleet changed: now simulating %d primaries and %d customers", len(fleet.primaries), len(fleet.customers))
+        except (requests.RequestException, KeyError) as exc:
+            logger.warning("Couldn't refresh the fleet from the backend, keeping the previous one: %s", exc)
 
 
 def _seed_with_retry(url: str, payload: list[dict], what: str) -> None:
@@ -303,17 +382,13 @@ async def down_router_loop(engine, target, router: dict, interfaces: list[str]) 
         await asyncio.sleep(random.uniform(300, 600))
 
 
-async def random_event_loop(
-    engine,
-    target,
-    routers: list[dict],
-    peer_adjacency: dict[str, list[str]],
-    primary_interfaces: dict[str, list[str]],
-    bgp_bundles: dict[str, dict[str, dict]],
-) -> None:
+async def random_event_loop(engine, target, fleet: Fleet) -> None:
     while True:
         await asyncio.sleep(random.uniform(TICK_MIN_SECONDS, TICK_MAX_SECONDS))
-        router = random.choice(routers)
+        if not fleet.primaries:
+            continue
+        router = random.choice(fleet.primaries)
+        peer_adjacency, primary_interfaces, bgp_bundles = fleet.peer_adjacency, fleet.primary_interfaces, fleet.bgp_bundles
         roll = random.random()
 
         if roll < 0.08:
@@ -378,13 +453,7 @@ async def random_event_loop(
         # else: quiet tick, nothing happens
 
 
-async def scheduled_bgp_incident_loop(
-    engine,
-    target,
-    routers: list[dict],
-    peer_adjacency: dict[str, list[str]],
-    bgp_bundles: dict[str, dict[str, dict]],
-) -> None:
+async def scheduled_bgp_incident_loop(engine, target, fleet: Fleet) -> None:
     """Forces a primary-to-primary BGP incident at a fixed cadence (default
     every 10 minutes), independent of random_event_loop's dice rolls - so
     there's always a guaranteed, bounded-wait way to see a peering fail and
@@ -394,7 +463,8 @@ async def scheduled_bgp_incident_loop(
     the bundle's own physical redundancy - see scheduled_bundle_failure_loop
     for the "transport actually gone" scenario."""
     while True:
-        candidates = [r for r in routers if peer_adjacency.get(r["mgmt_ip"])]
+        peer_adjacency, bgp_bundles = fleet.peer_adjacency, fleet.bgp_bundles
+        candidates = [r for r in fleet.primaries if peer_adjacency.get(r["mgmt_ip"])]
         if candidates:
             router = random.choice(candidates)
             peer_ip = random.choice(peer_adjacency[router["mgmt_ip"]])
@@ -406,13 +476,7 @@ async def scheduled_bgp_incident_loop(
         await asyncio.sleep(BGP_INCIDENT_INTERVAL_SECONDS)
 
 
-async def scheduled_bundle_failure_loop(
-    engine,
-    target,
-    routers: list[dict],
-    peer_adjacency: dict[str, list[str]],
-    bgp_bundles: dict[str, dict[str, dict]],
-) -> None:
+async def scheduled_bundle_failure_loop(engine, target, fleet: Fleet) -> None:
     """Forces a genuine redundancy-exhausting bundle failure at a fixed
     cadence (default every 15 minutes): every member of a random bundle goes
     down in turn (not just one), so the backend's true-redundancy rollup
@@ -422,7 +486,8 @@ async def scheduled_bundle_failure_loop(
     member but not when it's genuinely exhausted. Fires once on startup,
     then every interval after."""
     while True:
-        candidates = [r for r in routers if peer_adjacency.get(r["mgmt_ip"])]
+        peer_adjacency, bgp_bundles = fleet.peer_adjacency, fleet.bgp_bundles
+        candidates = [r for r in fleet.primaries if peer_adjacency.get(r["mgmt_ip"])]
         if candidates:
             router = random.choice(candidates)
             peer_ip = random.choice(peer_adjacency[router["mgmt_ip"]])
@@ -447,7 +512,7 @@ async def scheduled_bundle_failure_loop(
 CUSTOMER_UPLINK_INTERFACE = "GigabitEthernet0/0"
 
 
-async def customer_event_loop(engine, target, customers: list[dict]) -> None:
+async def customer_event_loop(engine, target, fleet: Fleet) -> None:
     """Same trap variety as random_event_loop for primaries, minus BGP and
     the protocols that ride on the BGP mesh (BFD, IS-IS) - a customer CPE is
     single-homed to one primary with no other peer, so there's no adjacency
@@ -457,7 +522,9 @@ async def customer_event_loop(engine, target, customers: list[dict]) -> None:
     dominant event, matching a CPE's single physical port."""
     while True:
         await asyncio.sleep(random.uniform(CUSTOMER_TICK_MIN_SECONDS, CUSTOMER_TICK_MAX_SECONDS))
-        customer = random.choice(customers)
+        if not fleet.customers:
+            continue
+        customer = random.choice(fleet.customers)
         roll = random.random()
 
         if roll < 0.08:
@@ -502,44 +569,57 @@ async def main() -> None:
     bgp_pairs = load_bgp_topology()
     seed_bgp_topology(bgp_pairs)
     peer_adjacency = build_peer_adjacency(bgp_pairs)
-    bgp_bundles = build_bgp_bundles(peer_adjacency)
-    primary_interfaces = build_customer_facing_interfaces(routers, customers)
+    fleet = Fleet(routers, customers, peer_adjacency, build_bgp_bundles(peer_adjacency))
+
+    # From here on, simulate whatever the backend actually has - which
+    # includes anything added from the UI or by bulk upload, not just the
+    # seed files above. Falls back to the seed files' fleet if the backend
+    # can't be read (e.g. SERVICE_API_TOKEN mismatch).
+    try:
+        fleet.update(*fetch_fleet_from_backend())
+    except (requests.RequestException, KeyError) as exc:
+        logger.warning("Couldn't load the fleet from the backend, simulating the seed files only: %s", exc)
 
     engine = SnmpEngine()
     target = UdpTransportTarget((TRAP_HOST, TRAP_PORT))
 
-    await boot_sequence(engine, target, routers, delay=0.05)
-    await boot_sequence(engine, target, customers, delay=0.01)
+    await boot_sequence(engine, target, fleet.primaries, delay=0.05)
+    await boot_sequence(engine, target, fleet.customers, delay=0.01)
 
-    pool = routers.copy()
+    pool = fleet.primaries.copy()
     random.shuffle(pool)
     flapping_routers = pool[:FLAPPING_ROUTER_COUNT]
     down_routers = pool[FLAPPING_ROUTER_COUNT : FLAPPING_ROUTER_COUNT + DOWN_ROUTER_COUNT]
 
-    routers_by_ip = {r["mgmt_ip"]: r for r in routers}
+    routers_by_ip = {r["mgmt_ip"]: r for r in fleet.primaries}
     all_bundle_links = [
         (routers_by_ip[router_ip], peer_ip, bundle_info)
-        for router_ip, peers in bgp_bundles.items()
+        for router_ip, peers in fleet.bgp_bundles.items()
+        if router_ip in routers_by_ip
         for peer_ip, bundle_info in peers.items()
     ]
     random.shuffle(all_bundle_links)
     flapping_bundles = all_bundle_links[:FLAPPING_BUNDLE_COUNT]
 
     logger.info(
-        "Simulating %d chronically-flapping routers, %d intermittently-down routers, and "
-        "%d chronically-flapping bundle members, plus quiet last-mile noise across %d customer CPE routers",
+        "Simulating %d primaries and %d customers (%d chronically-flapping routers, %d intermittently-down "
+        "routers, %d chronically-flapping bundle members); re-reading the fleet every %ds",
+        len(fleet.primaries),
+        len(fleet.customers),
         len(flapping_routers),
         len(down_routers),
         len(flapping_bundles),
-        len(customers),
+        FLEET_REFRESH_SECONDS,
     )
 
+    primary_interfaces = fleet.primary_interfaces
     tasks = [
         simulation_control_loop(),
-        random_event_loop(engine, target, routers, peer_adjacency, primary_interfaces, bgp_bundles),
-        customer_event_loop(engine, target, customers),
-        scheduled_bgp_incident_loop(engine, target, routers, peer_adjacency, bgp_bundles),
-        scheduled_bundle_failure_loop(engine, target, routers, peer_adjacency, bgp_bundles),
+        fleet_refresh_loop(fleet),
+        random_event_loop(engine, target, fleet),
+        customer_event_loop(engine, target, fleet),
+        scheduled_bgp_incident_loop(engine, target, fleet),
+        scheduled_bundle_failure_loop(engine, target, fleet),
     ]
     tasks += [flap_loop(engine, target, r, primary_interfaces.get(r["mgmt_ip"], [])) for r in flapping_routers]
     tasks += [down_router_loop(engine, target, r, primary_interfaces.get(r["mgmt_ip"], [])) for r in down_routers]

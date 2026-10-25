@@ -51,13 +51,21 @@ FAULT_INTERVAL_MAX_SECONDS = 40
 active_faults: dict[int, int] = {}
 
 
-def _eligible_peering_ids_and_counts(db) -> list[tuple[int, int]]:
+def _eligible_peering_ids_and_counts(db) -> dict[str, list[tuple[int, int]]]:
+    """Faultable peerings grouped by their router_a's country, so the
+    caller can pick a country first - otherwise a region with many links
+    (e.g. a freshly bulk-uploaded country) would soak up nearly every
+    fault and the rest of the map would almost never see one."""
     peerings = (
         db.query(BgpPeering)
         .filter(BgpPeering.status == BgpSessionStatus.ESTABLISHED, BgpPeering.repeater_count >= 2)
         .all()
     )
-    return [(p.id, p.repeater_count) for p in peerings if p.id not in active_faults]
+    by_region: dict[str, list[tuple[int, int]]] = {}
+    for p in peerings:
+        if p.id not in active_faults:
+            by_region.setdefault(p.router_a.country or "", []).append((p.id, p.repeater_count))
+    return by_region
 
 
 def _bundle_for(db, peering_id: int, router_id: int) -> InterfaceBundle | None:
@@ -146,7 +154,8 @@ async def _run_one_fault(peering_id: int, segment_index: int) -> None:
 async def fiber_fault_loop() -> None:
     """Runs for the lifetime of the app: every 15-40s, knocks out one
     interior span of fiber on a random established peering long enough to
-    have such a span, then heals it exactly FAULT_DURATION_SECONDS later.
+    have such a span (random country first, then a random link in it), then
+    heals it exactly FAULT_DURATION_SECONDS later.
     Only started when FIBER_FAULT_SIMULATION is on (see app.main), and
     pauses with the Settings > Simulation toggle like the trap simulator."""
     while True:
@@ -160,6 +169,6 @@ async def fiber_fault_loop() -> None:
             db.close()
         if not candidates:
             continue
-        peering_id, repeater_count = random.choice(candidates)
+        peering_id, repeater_count = random.choice(candidates[random.choice(list(candidates))])
         segment_index = random.randint(1, repeater_count - 1)
         asyncio.create_task(_run_one_fault(peering_id, segment_index))

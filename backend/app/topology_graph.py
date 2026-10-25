@@ -65,6 +65,19 @@ def sync_peering_to_neo4j(peering, bundle_a, bundle_b) -> None:
         )
 
 
+def resync_peering_to_neo4j(peering, bundle_a, bundle_b) -> None:
+    """Like sync_peering_to_neo4j, but first drops every SUPPORTED_BY edge
+    into this peering's span - for repairing a span that had another
+    peering's interfaces wrongly attached to it (see
+    api/bgp.py:repair_peering_bundles)."""
+    with get_driver().session() as session:
+        session.run(
+            "MATCH (:Interface)-[r:SUPPORTED_BY]->(:FiberSpan {peering_id: $peering_id}) DELETE r",
+            peering_id=peering.id,
+        )
+    sync_peering_to_neo4j(peering, bundle_a, bundle_b)
+
+
 def delete_peering_from_neo4j(peering_id: int) -> None:
     """Removes the FiberSpan for this peering and the Interface nodes that
     were only SUPPORTED_BY it - an interface is only ever seeded onto one

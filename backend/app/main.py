@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     init_db()
     seed_default_admin()
+    await asyncio.to_thread(bgp.repair_peering_bundles)
     # Pre-warm the Kafka producer off the event loop before anything can
     # try to use it - get_producer() blocks with a retry loop while `kafka`
     # is still starting up, and trap_listener/fiber_faults must never stall

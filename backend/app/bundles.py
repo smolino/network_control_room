@@ -1,12 +1,12 @@
 """Interface-bundle (Port-channel/EtherChannel) derivation and state
 tracking for BGP peering links.
 
-Both this module and the simulator (simulator/trap_simulator.py -
-build_bgp_bundles, a separate process that can't import this package)
-independently derive identical bundle/member interface names from the same
-topology data (peers sorted by mgmt_ip) - the same "agree by construction,
-not by shared lookup table" pattern the codebase already uses for the
-plain (pre-bundle) FortyGigE/GigabitEthernet numbering.
+Bundle names come from the peer's position in the router's mgmt_ip-sorted
+peer list when a whole topology is seeded at once; links added later (Add
+Fleet, bulk upload) take the router's next free Port-channel number
+instead, so names can't collide. The stored InterfaceBundle rows are the
+source of truth - the simulator reads them back from GET /api/bgp/peerings
+rather than re-deriving them.
 """
 
 from datetime import datetime
@@ -55,16 +55,26 @@ def ensure_bundles_for_peering(
     peer_index: int,
 ) -> InterfaceBundle:
     """Idempotently creates (or returns the existing) InterfaceBundle + its
-    member Interfaces for one side of a peering."""
-    bundle_name, member_names = bundle_and_member_names(peer_index)
+    member Interfaces for this router's side of this peering.
 
+    `peer_index` is the preferred number, but a seed request only knows
+    about the links in that request - when a link is added on its own
+    later, that index can already belong to a bundle of a *different*
+    peering on this router. Reusing it would leave this peering with no
+    bundle of its own (and point IS-IS events and the topology graph at
+    the wrong link), so the next free index is taken instead."""
     bundle = (
         db.query(InterfaceBundle)
-        .filter(InterfaceBundle.router_id == router.id, InterfaceBundle.name == bundle_name)
+        .filter(InterfaceBundle.router_id == router.id, InterfaceBundle.peering_id == peering_id)
         .first()
     )
     if bundle is not None:
         return bundle
+
+    taken = {name for (name,) in db.query(InterfaceBundle.name).filter(InterfaceBundle.router_id == router.id)}
+    while bundle_and_member_names(peer_index)[0] in taken:
+        peer_index += 1
+    bundle_name, member_names = bundle_and_member_names(peer_index)
 
     bundle = InterfaceBundle(router_id=router.id, peering_id=peering_id, name=bundle_name, status=BundleStatus.UP)
     db.add(bundle)

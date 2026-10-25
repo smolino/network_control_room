@@ -104,7 +104,11 @@ incident type; topology graph → root cause; incident type → playbook).
   continuously sends real SNMP traps: boot-time `coldStart`s, a rich
   event mix on primaries (link flaps, BGP/CPU/temperature/config/auth
   events), and a much quieter trickle of occasional link blips on
-  customer routers.
+  customer routers. After seeding, it simulates the backend's *actual*
+  fleet (`GET /api/routers` + `/api/bgp/peerings`, re-read every
+  `FLEET_REFRESH_SECONDS`), so routers and links added from Add Fleet or a
+  bulk upload get the same event mix, using the bundle/interface names the
+  backend stored for them.
 - **frontend/** — React + Vite app with a Leaflet world map on an
   OpenStreetMap basemap (routers colored by status: green=up, red=down,
   yellow=flapping — see [Color reference](#color-reference); primaries
@@ -820,12 +824,13 @@ python3 generate_customer_routers.py   # rewrites customer_routers_seed.json (10
 | `SERVICE_API_TOKEN` | backend, simulator, `import-fleet.py` | unset (service auth off) | Admin-level bearer token for automation - see "Users and roles". Required by `docker-compose.dev.yml` |
 | `ADMIN_INITIAL_PASSWORD` | backend | `adminadmin` | Password for the `admin` account created on a fresh database |
 | `HTTP_PORT` | frontend (host side) | `80` | Host port `frontend` publishes (plain HTTP); set e.g. `127.0.0.1:8080` behind the external nginx (see "HTTPS / reverse proxy") |
-| `FIBER_FAULT_SIMULATION` | backend | `false` | Run the synthetic fiber-cut generator (`app/fiber_faults.py`: fake OPTICAL_ALARM + IS-IS flaps every 15-40s). Dev/demo only - `docker-compose.dev.yml` and `k8s/02-configmap.yaml` set it to `true` |
+| `FIBER_FAULT_SIMULATION` | backend | `false` | Run the synthetic fiber-cut generator (`app/fiber_faults.py`: fake OPTICAL_ALARM + IS-IS flaps every 15-40s, picking a random country first and then a random link in it, so every region gets cuts). Dev/demo only - `docker-compose.dev.yml` and `k8s/02-configmap.yaml` set it to `true` |
 | `NOMINATIM_URL` | backend | `https://nominatim.openstreetmap.org` | Geocoder behind `GET /api/geocode`, which Add Fleet uses to fill latitude/longitude for cities not in its built-in list. The backend needs outbound internet access to reach it; point this at a self-hosted Nominatim to avoid the public instance's 1 request/s limit |
 | `TRAP_PORT` | backend | `1162` | UDP port the trap listener binds |
 | `FLAP_WINDOW_SECONDS` | backend | `600` | Sliding window for flap detection |
 | `FLAP_TRANSITION_THRESHOLD` | backend | `4` | Transitions within the window to call it "flapping" |
-| `FLAPPING_ROUTER_COUNT` / `DOWN_ROUTER_COUNT` | simulator | `5` / `3` | How many primaries misbehave |
+| `FLAPPING_ROUTER_COUNT` / `DOWN_ROUTER_COUNT` | simulator | `5` / `3` | How many primaries misbehave (picked from the whole fleet at simulator startup) |
+| `FLEET_REFRESH_SECONDS` | simulator | `120` | How often the simulator re-reads the fleet from the backend, so newly added routers start getting traps |
 | `FLAPPING_BUNDLE_COUNT` | simulator | `3` | How many BGP-peering bundles get a chronically-flapping member (redundancy always absorbs it) |
 | `TICK_MIN_SECONDS` / `TICK_MAX_SECONDS` | simulator | `3` / `8` | Pace of the primary event stream |
 | `CUSTOMER_TICK_MIN_SECONDS` / `CUSTOMER_TICK_MAX_SECONDS` | simulator | `20` / `45` | Pace of the (much quieter) customer event stream |

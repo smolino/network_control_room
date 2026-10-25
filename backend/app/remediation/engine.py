@@ -31,6 +31,7 @@ from app.models import (
     Incident,
     IncidentStatus,
     IncidentType,
+    InterfaceBundle,
     RemediationAction,
     RemediationActionType,
     RemediationStatus,
@@ -153,8 +154,16 @@ def _simulated_config_snapshot(db: Session, router: Router, revision: int) -> st
     ]
 
     peers = _bgp_peers_sorted(db, router)
+    bundles = {
+        b.peering_id: b for b in db.query(InterfaceBundle).filter(InterfaceBundle.router_id == router.id).all()
+    }
     for i, (peer, peering) in enumerate(peers):
+        # The stored bundle wins - a link added after the initial seed may
+        # not sit at its sorted-peer position (see app.bundles).
         bundle_name, member_names = bundle_and_member_names(i)
+        if peering.id in bundles:
+            bundle_name = bundles[peering.id].name
+            member_names = [m.name for m in bundles[peering.id].members]
         fiber_note = ""
         if peering.distance_km is not None:
             fiber_note = f" — {peering.distance_km:.0f}km SMF, {peering.repeater_count} repeater(s)"
@@ -172,7 +181,7 @@ def _simulated_config_snapshot(db: Session, router: Router, revision: int) -> st
             lines += [
                 f"interface {member_name}",
                 f" description member of {bundle_name} (BGP peer {peer.hostname})",
-                f" channel-group {i + 1} mode active",
+                f" channel-group {bundle_name.removeprefix('Port-channel')} mode active",
                 " bandwidth 40000000",
                 " no shutdown",
                 "!",
