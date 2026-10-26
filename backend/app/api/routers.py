@@ -19,7 +19,7 @@ from app.models import (
     RouterType,
     TrapEvent,
 )
-from app.remediation.engine import needs_attention_router_ids
+from app.incidents.service import needs_attention_router_ids
 from app.schemas import (
     RemediationActionOut,
     RouterConfigBackupOut,

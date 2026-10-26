@@ -1,5 +1,14 @@
-import { useEffect, useState, useCallback, useRef } from "react";
-import { connectEvents, fetchBgpPeerings, fetchIncidentImpact, fetchIncidents, fetchRouters, fetchStats, fetchTeams } from "./api.js";
+import { useEffect, useState, useCallback } from "react";
+import {
+  connectEvents,
+  fetchBgpPeerings,
+  fetchIncidentImpact,
+  fetchIncidentQueue,
+  fetchIncidents,
+  fetchRouters,
+  fetchStats,
+  fetchTeams,
+} from "./api.js";
 import { clearSession, hasRole, loadSession, saveSession, SessionContext, UNAUTHORIZED_EVENT } from "./auth.js";
 import MapView from "./components/MapView.jsx";
 import Dashboard from "./components/Dashboard.jsx";
@@ -22,14 +31,65 @@ const TABS = [
   { key: "human-review", label: "Human Review" },
 ];
 
+// Open incidents a person has to act on - the Human Review board (see
+// backend/app/incidents/service.py).
+const HUMAN_STAGES = new Set(["triage", "acknowledged", "dispatched"]);
+const inQueue = (i) => i.status === "open" && HUMAN_STAGES.has(i.stage);
+
+// Same order as GET /api/incidents/queue: P1 first, then oldest first.
+function sortQueue(list) {
+  return [...list].sort(
+    (a, b) =>
+      (a.priority ?? "P9").localeCompare(b.priority ?? "P9") || (a.opened_at ?? "").localeCompare(b.opened_at ?? "")
+  );
+}
+
+// Every WebSocket event carries changed incidents in full (the same shape
+// as the REST API), so merging is a plain upsert.
+function upsertIncidents(prev, updates) {
+  if (updates.length === 0) return prev;
+  const byId = new Map(updates.map((i) => [i.id, i]));
+  const known = new Set(prev.map((i) => i.id));
+  const added = updates.filter((i) => !known.has(i.id));
+  const merged = prev.map((i) => (byId.has(i.id) ? { ...i, ...byId.get(i.id) } : i));
+  return [...added, ...merged].slice(0, 200);
+}
+
+function applyToQueue(prev, updates) {
+  if (updates.length === 0) return prev;
+  const byId = new Map(updates.map((i) => [i.id, i]));
+  const known = new Set(prev.map((i) => i.id));
+  const kept = prev
+    .map((i) => (byId.has(i.id) ? { ...i, ...byId.get(i.id) } : i))
+    .filter(inQueue);
+  return sortQueue([...kept, ...updates.filter((i) => !known.has(i.id) && inQueue(i))]);
+}
+
+function patchRouters(prev, updates) {
+  if (!updates?.length) return prev;
+  const byId = new Map(updates.map((r) => [r.id, r]));
+  return prev.map((r) =>
+    byId.has(r.id) ? { ...r, status: byId.get(r.id).status, needs_attention: byId.get(r.id).needs_attention } : r
+  );
+}
+
+// ?incident=<id> - the link in team notification emails (see
+// api/incidents.py:notify_team) opens that incident on the board.
+function incidentIdFromUrl() {
+  const id = Number(new URLSearchParams(window.location.search).get("incident"));
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
 export default function App() {
   const [session, setSession] = useState(loadSession);
   const currentUser = session?.user ?? null;
   const authenticated = !!currentUser;
-  const [view, setView] = useState("map");
+  const [focusIncidentId, setFocusIncidentId] = useState(incidentIdFromUrl);
+  const [view, setView] = useState(() => (incidentIdFromUrl() ? "human-review" : "map"));
   const [routers, setRouters] = useState([]);
   const [incidents, setIncidents] = useState([]);
   const [customerIncidents, setCustomerIncidents] = useState([]);
+  const [queue, setQueue] = useState([]);
   const [stats, setStats] = useState(null);
   const [peerings, setPeerings] = useState([]);
   const [teams, setTeams] = useState([]);
@@ -53,6 +113,11 @@ export default function App() {
     setSession(null);
     setImpactHighlight(null);
     setFaultHighlight(null);
+  }, []);
+
+  // Drop ?incident= once read, so a reload doesn't keep jumping back to it.
+  useEffect(() => {
+    if (incidentIdFromUrl()) window.history.replaceState(null, "", window.location.pathname);
   }, []);
 
   // Any API call coming back 401 (expired token, password reset by an
@@ -87,30 +152,23 @@ export default function App() {
     setView("map");
   }, []);
 
-  // The WS handler below is only ever set up once (empty effect deps), so
-  // it can't read fresh `routers` state directly without going stale - a
-  // ref sidesteps that without re-subscribing the socket on every routers
-  // update.
-  const routersRef = useRef([]);
-  useEffect(() => {
-    routersRef.current = routers;
-  }, [routers]);
-
   const reloadTeams = useCallback(async () => {
     setTeams(await fetchTeams());
   }, []);
 
   const reloadAll = useCallback(async () => {
-    const [r, i, ci, s, p] = await Promise.all([
+    const [r, i, ci, q, s, p] = await Promise.all([
       fetchRouters(),
       fetchIncidents({ limit: 200, routerType: "primary" }),
       fetchIncidents({ limit: 200, routerType: "customer" }),
+      fetchIncidentQueue(),
       fetchStats(),
       fetchBgpPeerings(),
     ]);
     setRouters(r);
     setIncidents(i);
     setCustomerIncidents(ci);
+    setQueue(q);
     setStats(s);
     setPeerings(p);
     await reloadTeams();
@@ -137,41 +195,6 @@ export default function App() {
 
     const connect = () => {
       ws = connectEvents((msg) => {
-        if (msg.type === "incident_resolved") {
-          const routerType =
-            msg.router?.router_type ??
-            routersRef.current.find((r) => r.id === msg.incident.router_id)?.router_type;
-          const setTarget = routerType === "customer" ? setCustomerIncidents : setIncidents;
-          setTarget((prev) => {
-            const idx = prev.findIndex((i) => i.id === msg.incident.id);
-            if (idx === -1) return prev;
-            const next = [...prev];
-            next[idx] = {
-              ...next[idx],
-              status: msg.incident.status,
-              closed_at: msg.incident.closed_at,
-              resolved_manually: msg.incident.resolved_manually,
-              impact: null,
-            };
-            return next;
-          });
-
-          if (msg.router) {
-            setRouters((prev) => {
-              const idx = prev.findIndex((r) => r.id === msg.router.id);
-              if (idx === -1) return prev;
-              const next = [...prev];
-              next[idx] = {
-                ...next[idx],
-                status: msg.router.status,
-                needs_attention: msg.router.needs_attention,
-              };
-              return next;
-            });
-          }
-          return;
-        }
-
         if (msg.type === "fiber_fault") {
           setPeerings((prev) => {
             const idx = prev.findIndex((p) => p.id === msg.peering_id);
@@ -186,42 +209,17 @@ export default function App() {
           return;
         }
 
-        if (msg.type !== "trap") return;
+        // "trap" (a new alarm and whatever it changed) and "incident_updated"
+        // (sweeper/operator actions) carry the same incidents/routers lists.
+        if (msg.type !== "trap" && msg.type !== "incident_updated") return;
 
-        setRouters((prev) => {
-          const idx = prev.findIndex((r) => r.id === msg.router.id);
-          if (idx === -1) return prev;
-          const next = [...prev];
-          next[idx] = {
-            ...next[idx],
-            status: msg.router.status,
-            needs_attention: msg.router.needs_attention,
-          };
-          return next;
-        });
-
-        const setIncidentsTarget = msg.router.router_type === "customer" ? setCustomerIncidents : setIncidents;
-        setIncidentsTarget((prev) => {
-          const idx = prev.findIndex((i) => i.id === msg.incident.id);
-          const merged = {
-            ...(idx !== -1 ? prev[idx] : {}),
-            id: msg.incident.id,
-            router_id: msg.incident.router_id,
-            incident_type: msg.incident.incident_type,
-            status: msg.incident.status,
-            trap_count: msg.incident.trap_count,
-            description: msg.incident.description,
-            updated_at: msg.trap.received_at,
-            opened_at: idx !== -1 ? prev[idx].opened_at : msg.trap.received_at,
-            remediation: msg.incident.remediation ?? (idx !== -1 ? prev[idx].remediation : undefined),
-            impact: msg.incident.impact ?? null,
-            fault_location: msg.incident.fault_location ?? (idx !== -1 ? prev[idx].fault_location : null),
-          };
-          if (idx === -1) return [merged, ...prev].slice(0, 200);
-          const next = [...prev];
-          next[idx] = merged;
-          return next;
-        });
+        const changed = msg.incidents ?? [];
+        if (changed.length > 0) {
+          setIncidents((prev) => upsertIncidents(prev, changed.filter((i) => i.router_type !== "customer")));
+          setCustomerIncidents((prev) => upsertIncidents(prev, changed.filter((i) => i.router_type === "customer")));
+          setQueue((prev) => applyToQueue(prev, changed));
+        }
+        setRouters((prev) => patchRouters(prev, msg.routers));
 
         if (msg.bgp_peering) {
           setPeerings((prev) => {
@@ -273,6 +271,15 @@ export default function App() {
             <span><strong>{stats.routers_down}</strong> down</span>
             <span><strong>{stats.routers_flapping}</strong> flapping</span>
             <span><strong>{stats.open_incidents}</strong> open incidents</span>
+            {stats.incidents_in_triage > 0 && (
+              <span
+                className="link"
+                onClick={() => setView("human-review")}
+                title="Open incidents nobody has picked up yet"
+              >
+                <strong style={{ color: "#fb923c" }}>{stats.incidents_in_triage}</strong> in triage
+              </span>
+            )}
             {stats.customers_impacted > 0 && (
               <span title="Distinct customer routers inside the blast radius of an open incident">
                 <strong style={{ color: stats.customers_down > 0 ? "#f87171" : "#facc15" }}>
@@ -379,9 +386,13 @@ export default function App() {
           )}
           {activeView === "human-review" && (
             <HumanReview
-              incidents={[...incidents, ...customerIncidents]}
+              queue={queue}
               routers={routers}
               teams={teams}
+              focusIncidentId={focusIncidentId}
+              onFocusIncident={setFocusIncidentId}
+              onShowImpact={showImpactOnMap}
+              onLocateFault={locateFaultOnMap}
               onSelectRouter={(id) => {
                 setSelectedRouterId(id);
                 setView("routers");

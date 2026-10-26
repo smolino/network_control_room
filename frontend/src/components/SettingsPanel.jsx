@@ -10,6 +10,7 @@ import {
   enableOtp,
   fetchSimulationStatus,
   fetchUsers,
+  resolveAllOpenIncidents,
   setSimulationEnabled,
   startOtpSetup,
   updateTeam,
@@ -19,7 +20,7 @@ import { loadSession, ROLES, useCurrentUser, useHasRole } from "../auth.js";
 
 const ROLE_HINT = {
   viewer: "read-only",
-  operator: "+ resolve incidents, notify teams",
+  operator: "+ acknowledge, dispatch and resolve incidents",
   admin: "+ fleet, teams, simulation, users",
 };
 
@@ -637,6 +638,52 @@ function SimulationTab() {
           )}
         </>
       )}
+
+      {isAdmin && <ResetIncidents />}
+    </>
+  );
+}
+
+// Debug/demo reset, admin-only - kept out of the operator views so it can't
+// be mistaken for normal incident handling.
+function ResetIncidents() {
+  const [resetting, setResetting] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const reset = async () => {
+    if (
+      !window.confirm(
+        "Resolve ALL open incidents system-wide and mark every link and BGP session back up? This cannot be undone."
+      )
+    ) {
+      return;
+    }
+    setResetting(true);
+    setMessage("");
+    setError("");
+    try {
+      const resolved = await resolveAllOpenIncidents();
+      setMessage(`Reset ${resolved.length} open incident${resolved.length === 1 ? "" : "s"}.`);
+    } catch (err) {
+      setError(`Couldn't reset incidents: ${err.message}`);
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  return (
+    <>
+      <h3>Reset incidents</h3>
+      <p className="settings-hint">
+        Resolves every open incident (reason "reset") and restores all link and BGP state - for clearing out a demo
+        or test run, not for day-to-day handling.
+      </p>
+      {error && <div className="login-error">{error}</div>}
+      {message && <div className="form-success">{message}</div>}
+      <button className="login-submit" onClick={reset} disabled={resetting}>
+        {resetting ? "Resetting…" : "Reset all open incidents"}
+      </button>
     </>
   );
 }

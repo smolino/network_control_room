@@ -219,11 +219,13 @@ everything defaults to `L3` except the genuinely physical-layer types:
 | Trap | Incident type | Layer |
 |---|---|---|
 | `linkDown` | `LINK_DOWN` (or `LINK_FLAP` if the interface has flapped ≥4 times in the last 10 minutes) | L3 |
-| `linkUp` | `LINK_UP` (resolves any open `LINK_DOWN`/`LINK_FLAP` on that interface) | L3 |
-| `coldStart` / `warmStart` | `COLD_START` / `WARM_START` | L3 |
+| `linkUp` | alarm only — resolves any open `LINK_DOWN`/`LINK_FLAP` on that interface | L3 |
+| `coldStart` / `warmStart` | alarm only — marks the router up | L3 |
 | `authenticationFailure` | `AUTH_FAILURE` | L3 |
-| BGP established/backward-transition | `BGP_STATE_CHANGE` | L3 |
-| IS-IS adjacency down/up (on a bundle member) | `ISIS_NBR_DOWN` / `ISIS_NBR_UP` | L3 |
+| BGP backward-transition | `BGP_STATE_CHANGE` | L3 |
+| BGP established | alarm only — resolves the open `BGP_STATE_CHANGE` on that interface | L3 |
+| IS-IS adjacency down (on a bundle member) | `ISIS_NBR_DOWN` | L3 |
+| IS-IS adjacency up | alarm only — resolves the open `ISIS_NBR_DOWN` on that member | L3 |
 | BFD session down | `BFD_SESSION_DOWN` | L3 |
 | Cisco CPU threshold | `HIGH_CPU` | L3 |
 | Cisco memory-pool-low | `HIGH_MEMORY` | L3 |
@@ -231,7 +233,12 @@ everything defaults to `L3` except the genuinely physical-layer types:
 | Cisco environment/temperature | `ENV_ALARM` | L3 |
 | Cisco fan / redundant-supply failure | `FAN_FAILURE` / `PSU_FAILURE` | **L1** |
 | Cisco optical Rx-power threshold, or the fiber-fault generator's `opticalLossOfSignal`/`opticalSignalRestored` (`FIBER_CUT_OID`/`FIBER_CUT_CLEAR_OID`, synthetic — see below) | `OPTICAL_ALARM` | **L1** |
-| anything else | `UNKNOWN` | L3 |
+| anything else | alarm only | L3 |
+
+"Alarm only" traps are stored as `TrapEvent` rows (each router's trap
+history) but never become incidents — the incident table only holds
+problems someone or something has to deal with. See "Incident workflow"
+below.
 
 Flap detection (`backend/app/snmp/flapping.py`) keeps a rolling window
 per `(router, interface)`; once enough linkUp/linkDown transitions occur
@@ -326,28 +333,37 @@ the pipeline above:
 
 1. An `OPTICAL_ALARM` incident opens, tied to the peering via
    `Incident.peering_id` (not a router — a fiber cut isn't any one
-   router's problem). It goes through the normal auto-heal pipeline like
-   any other real optical alarm (`NOTIFY_ONLY` — a fiber cut can't be
-   fixed by a config push).
+   router's problem). After the settle window it goes through the normal
+   auto-heal pipeline like any other real optical alarm (`NOTIFY_ONLY` — a
+   fiber cut can't be fixed by a config push) and lands in triage.
 2. One bundle member interface on **each side** of that peering loses IS-
    IS adjacency (`ISIS_NBR_DOWN`) — a real, partial degradation, not the
    whole bundle, since real fiber typically carries one wavelength/member
    per physical strand.
-3. `app/correlation.py:try_link_root_cause` runs for each of those two new
-   `ISIS_NBR_DOWN` incidents: it asks Neo4j which peering(s) that specific
-   interface's fiber path is `SUPPORTED_BY`, then checks Postgres for an
-   open L1 incident on that peering within the last 60s
-   (`CORRELATION_WINDOW_SECONDS`). Finding the `OPTICAL_ALARM` from step
-   1, it sets `root_cause_incident_id` — marking both as **symptomatic**.
-4. Symptomatic incidents **never get their own auto-heal attempt**
-   (`classifier.py` skips `maybe_remediate` whenever
-   `root_cause_incident_id` is set) — bouncing a downstream interface
-   wouldn't fix an upstream fiber cut, and it avoids a redundant config
-   backup for every member a single fault happens to touch.
-5. After 10s, the reverse sequence resolves everything: both members'
-   `ISIS_NBR_UP`, then the `OPTICAL_ALARM` itself (via a synthetic
-   `FIBER_CUT_CLEAR_OID` event, resolved by peering rather than by
-   router+interface — see `flapping.py:resolve_incident_for_peering`).
+3. Correlation runs **in both directions**, since alarms don't always
+   arrive in causal order (`app/correlation.py`, applied by
+   `app/incidents/service.py` whenever an incident opens):
+   - a new L3 incident asks Neo4j which peering(s) that specific
+     interface's fiber path is `SUPPORTED_BY`, then checks Postgres for an
+     open L1 incident on that peering within the last 60s
+     (`CORRELATION_WINDOW_SECONDS`);
+   - a new peering-scoped L1 incident asks Neo4j for every interface its
+     span carries, and claims any open L3 incident on them that opened in
+     the last 60s.
+   Either way the L3 incident gets `root_cause_incident_id` and stage
+   `suppressed` — it's a **symptom**.
+4. Symptoms **never get their own auto-heal attempt** — bouncing a
+   downstream interface wouldn't fix an upstream fiber cut, and it avoids
+   a redundant config backup for every member a single fault happens to
+   touch. Auto-heal waits out a short settle window (see "Incident
+   workflow") precisely so a late L1 alarm still gets to claim them first.
+5. When the cut heals, both members' IS-IS adjacency-up traps resolve the
+   symptoms, then the `OPTICAL_ALARM` itself resolves (via a synthetic
+   `FIBER_CUT_CLEAR_OID` event, by peering rather than by
+   router+interface). A symptom still open at that point is **released**:
+   unlinked and sent back to `new`, so if it's still down a settle window
+   later it's handled as a problem of its own. Resolving a root by hand
+   instead resolves its symptoms along with it.
 
 **In the UI:**
 - **Map** — an "L1 physical" / "L3 logical" layer toggle shows/hides the
@@ -357,7 +373,7 @@ the pipeline above:
   the same blink timer as `needs_attention`), and the two routers on
   either end get a dashed amber ring (`#fb923c`) distinct from the solid
   orange `needs_attention` ring — "symptomatic of an upstream fault," not
-  "this router's own remediation failed."
+  "this router has an incident nobody has picked up."
 - **Incidents tab** — a Layer column, an "All/L1/L3" filter, and a "Hide
   symptomatic" checkbox (checked by default) that filters out anything
   with `root_cause_incident_id` set — matching the doc this app follows:
@@ -454,8 +470,8 @@ PBKDF2-hashed, two-factor auth (TOTP) is verified server-side, and
 | Role | Can |
 |---|---|
 | `viewer` | See everything: map, dashboard, routers, incidents, Human Review analysis |
-| `operator` | + resolve incidents (single and bulk), send incidents to SOC/maintenance teams |
-| `admin` | + Add Fleet / remove routers / create BGP links, router models, teams, pause/resume simulation, "Reset ALL open incidents", manage users and roles |
+| `operator` | + acknowledge, dispatch (send to SOC/maintenance) and resolve incidents on the Human Review board |
+| `admin` | + Add Fleet / remove routers / create BGP links, router models, teams, pause/resume simulation, "Reset all open incidents" (Settings → Simulation), manage users and roles |
 
 Checks are enforced on the backend (`require_role` in `app/auth.py`); the
 UI only hides what a role can't use. Each request re-reads the user, so a
@@ -475,9 +491,9 @@ the only unauthenticated endpoints.
 
 ## Auto-heal
 
-`backend/app/remediation/engine.py` runs a rule-based playbook the first
-time an actionable incident opens (repeat traps against an already-open
-incident don't re-trigger it):
+`backend/app/remediation/engine.py` runs a rule-based playbook once per
+incident, after its settle window (see "Incident workflow" below — repeat
+traps against an already-open incident don't re-trigger it):
 
 1. **Always back up first** (`backup_router_config`) — snapshots the
    router's running-config *before* anything else happens, so any change
@@ -500,11 +516,10 @@ incident don't re-trigger it):
    | `FAN_FAILURE` / `PSU_FAILURE` | `NOTIFY_ONLY` (skipped) | chassis hardware failure — NOC/dispatch notified |
    | `HIGH_MEMORY` | `NOTIFY_ONLY` (skipped) | memory-pool exhaustion — flagged for human review rather than an automated process restart |
 
-   `LINK_UP`, `COLD_START`/`WARM_START`, `ISIS_NBR_UP`, and `UNKNOWN` are
-   "good news" or uninterpretable events and never enter the auto-heal
-   pipeline at all. Whatever the type, an incident that's been linked as
+   Ups, boots and unrecognized traps are alarms, not incidents, so they
+   never get here. Whatever the type, an incident that's been linked as
    **symptomatic** of an open L1 root cause (see "L1/L3 layering" above)
-   also skips auto-heal entirely, even if its type would otherwise be
+   skips auto-heal entirely, even if its type would otherwise be
    actionable.
 
 Every backup and every action (success, failure, or skip, with a log) is
@@ -521,35 +536,79 @@ replace `_simulated_config_snapshot` and the action execution in
 `engine.py` with actual SSH/NETCONF/RESTCONF calls against the device,
 while keeping the same backup-then-act-then-record flow.
 
-**Manual resolution.** Every `NOTIFY_ONLY` incident type in the table
-above stays **open** - nothing auto-remediates them, so they sit there
-until a human closes them (or, for `ISIS_NBR_DOWN`/`OPTICAL_ALARM`
-specifically, until the matching "up"/"cleared" event resolves it - see
-"L1/L3 layering" above). The Incidents tab's
-"⚠ Needs manual review" filter pulls up exactly these; every open
-incident has a "Resolve" link, and a "Resolve N open (shown)" button
-above the table bulk-resolves whatever's currently open in the filtered
-view (with a confirmation prompt). Resolving sets `resolved_manually`
-so the UI can distinguish "a human closed this" from "a linkUp/
-bgpEstablished trap closed this" - both look identical otherwise
-(`status: resolved`). Backed by `POST /api/incidents/{id}/resolve` and
-`POST /api/incidents/resolve` (`{"incident_ids": [...]}`), both broadcast
-over the WebSocket so every connected tab updates immediately, not just
-the one that clicked.
+## Incident workflow
 
-**When auto-heal doesn't fix it, the map tells you.** If a remediation
-action comes back `failed` and the incident is still open, that router
-is "needs attention" (`RouterOut.needs_attention`,
-`app/remediation/engine.py:needs_attention_router_ids`) and its marker
-blinks on the map — alternating between a bright orange ring at full
-size/opacity and a dim, smaller one, about twice a second — with a
-"⚠ auto-heal failed — needs attention" line in its popup. This needs no
-separate "resolved" bookkeeping: `needs_attention` is recomputed fresh on
-every trap from current DB state (does this router have an *open*
-incident whose remediation failed?), so the instant the router actually
-recovers (a real `linkUp` resolves the incident, independent of whether
-the earlier auto-heal attempt succeeded) it drops out of the query and
-the blink stops on its own.
+Every incident moves through one lifecycle, owned by a single module —
+`backend/app/incidents/service.py` is the only code that changes incident
+state, and every change it makes goes out as one WebSocket event carrying
+the changed incidents in full (the same shape as the REST API).
+
+```
+ trap ─▶ alarm only (TrapEvent): ups, boots, unknown traps
+     └▶ NEW ── settle window ──▶ auto-heal (backup + playbook)
+         │                         ├─ fixed, type has a clear trap ─▶ MONITORING ─ clear trap ─▶ RESOLVED
+         │                         │                                    └─ timeout ─▶ TRIAGE
+         │                         ├─ fixed, no clear trap ─────────▶ RESOLVED (auto_healed)
+         │                         └─ failed / notify-only ─────────▶ TRIAGE
+         └▶ SUPPRESSED (symptom of an open L1 root cause)
+ TRIAGE ─ acknowledge ─▶ ACKNOWLEDGED ─ send to team ─▶ DISPATCHED ─ resolve (reason) ─▶ RESOLVED
+```
+
+- **Settle window** (`INCIDENT_SETTLE_SECONDS`, default 20s): auto-heal
+  doesn't fire the instant an incident opens. That gives a late L1 alarm
+  time to claim its symptoms, and a link that recovers by itself within
+  the window is never bounced or backed up at all. `LINK_FLAP` skips it —
+  flap detection already needed several transitions to fire.
+- **Fixes are confirmed, not assumed.** For types the device reports
+  clearing (`linkUp`, `bgpEstablished`, IS-IS adjacency up, optical signal
+  restored), a successful fix waits in `monitoring` for that clear trap;
+  if it doesn't come within `INCIDENT_MONITORING_TIMEOUT_SECONDS` (default
+  10 min) the incident goes to triage. A failed fix always goes to triage —
+  including `HIGH_CPU`/`BGP_STATE_CHANGE`, which used to be logged as
+  already resolved, so a failed fix for them was never shown to anyone.
+- **A clear trap resolves an incident from any stage**
+  (`resolution_reason: auto_cleared`), including ones a human is already
+  working on.
+- The **sweeper** that drives the settle window and the monitoring timeout
+  runs inside the `correlator` between Kafka polls (`service.sweep`), so
+  incident writes from the pipeline still come from one process.
+
+**Human Review** is a board with one column per stage a person acts on —
+**Triage** (nobody has it yet), **Acknowledged** (an operator owns it),
+**Dispatched** (handed to a SOC/maintenance team) — sorted by **priority**
+(`P1`–`P4`, from trap severity, L1 vs L3, primary vs customer router, and
+current customer impact; recomputed on every stage change). It's served by
+`GET /api/incidents/queue` and kept live over the WebSocket. Clicking a
+card opens its analysis, suggested fix and actions:
+
+- **Acknowledge** (`POST /api/incidents/{id}/ack`) — you own it.
+- **Send & dispatch** (`POST /api/incidents/{id}/notify`) — emails the
+  chosen team and moves it to `dispatched` (unless the send failed). With
+  `PUBLIC_BASE_URL` set, the email links back to the incident
+  (`/?incident=<id>` opens it on the board).
+- **Resolve** (`POST /api/incidents/{id}/resolve`, `{"reason", "note"}`) —
+  a reason is required (`fixed`, `false_positive`, `maintenance`,
+  `duplicate`); the resolver's username, reason and note are kept on the
+  incident. Resolving a root cause resolves its symptoms too, and a
+  symptom can't be resolved on its own. "Resolve all in Triage" uses
+  `POST /api/incidents/resolve`, which likewise only takes root incidents.
+
+The **Incidents** tabs are a read-only history: stage and priority
+columns, filters by stage/type/layer, and how each resolved incident was
+closed. The admin-only "Reset all open incidents" lives in Settings →
+Simulation.
+
+**The map flags anything nobody has picked up.** A router with an open
+incident in `triage` is "needs attention" (`RouterOut.needs_attention`,
+`service.needs_attention_router_ids`): its marker blinks — alternating
+between a bright orange ring at full size/opacity and a dim, smaller one,
+about twice a second — with a "⚠ incident in triage — needs attention"
+line in its popup. It stops once the incident is acknowledged, dispatched
+or resolved. The top bar shows the fleet-wide triage count.
+
+Databases created before this workflow existed are upgraded at startup:
+the new columns are added by `add_missing_columns`, and
+`service.backfill_stages` gives existing incidents a stage.
 
 ## Two-tier topology: primaries, customers, and BGP
 
@@ -829,6 +888,9 @@ python3 generate_customer_routers.py   # rewrites customer_routers_seed.json (10
 | `FIBER_FAULT_DURATION_SECONDS` | backend | `60` | How long each synthetic fiber cut lasts before it heals |
 | `NOMINATIM_URL` | backend | `https://nominatim.openstreetmap.org` | Geocoder behind `GET /api/geocode`, which Add Fleet uses to fill latitude/longitude for cities not in its built-in list. The backend needs outbound internet access to reach it; point this at a self-hosted Nominatim to avoid the public instance's 1 request/s limit |
 | `TRAP_PORT` | backend | `1162` | UDP port the trap listener binds |
+| `INCIDENT_SETTLE_SECONDS` | correlator | `20` | How long a new incident waits before auto-heal runs (see "Incident workflow") |
+| `INCIDENT_MONITORING_TIMEOUT_SECONDS` | correlator | `600` | How long a successful fix waits for the device's clear trap before it's escalated to triage |
+| `PUBLIC_BASE_URL` | backend | unset | Public URL of the UI, e.g. `https://ncr.example.com` — adds a link to the incident in team notification emails |
 | `FLAP_WINDOW_SECONDS` | backend | `600` | Sliding window for flap detection |
 | `FLAP_TRANSITION_THRESHOLD` | backend | `4` | Transitions within the window to call it "flapping" |
 | `FLAPPING_ROUTER_COUNT` / `DOWN_ROUTER_COUNT` | simulator | `2` / `1` | How many primaries misbehave (picked from the whole fleet at simulator startup) |

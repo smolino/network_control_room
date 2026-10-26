@@ -6,11 +6,13 @@ from app.models import (
     AlarmLayer,
     BgpSessionStatus,
     BundleStatus,
+    IncidentStage,
     IncidentStatus,
     IncidentType,
     NotificationStatus,
     RemediationActionType,
     RemediationStatus,
+    ResolutionReason,
     RouterStatus,
     RouterType,
     TeamKind,
@@ -54,8 +56,9 @@ class RouterOut(BaseModel):
     longitude: float
     status: RouterStatus
     last_seen_at: datetime | None = None
-    # True when an open incident's auto-heal action came back FAILED - the
-    # UI blinks the router's marker until it actually recovers.
+    # True while the router has an open incident in triage - one nobody has
+    # picked up yet (see app.incidents.service.needs_attention_router_ids).
+    # The UI blinks the router's marker until it's acknowledged or clears.
     needs_attention: bool = False
     # This router's IS-IS NET (Network Entity Title) - primaries only, since
     # customer CPE doesn't run the backbone IGP. See app.bundles.isis_net.
@@ -146,8 +149,23 @@ class IncidentOut(BaseModel):
     closed_at: datetime | None = None
     trap_count: int
     description: str | None = None
-    resolved_manually: bool = False
     remediation: RemediationSummary | None = None
+    # Workflow - see models.IncidentStage and app.incidents.service.
+    stage: IncidentStage | None = None
+    stage_changed_at: datetime | None = None
+    severity: str | None = None
+    priority: str | None = None
+    owner_user_id: int | None = None
+    owner_username: str | None = None
+    acknowledged_at: datetime | None = None
+    resolved_by: str | None = None
+    resolution_reason: ResolutionReason | None = None
+    resolution_note: str | None = None
+    # Lets the UI file a live update under the right list without looking
+    # the router up first.
+    router_type: RouterType | None = None
+    # Open incidents currently suppressed as symptoms of this one.
+    symptom_count: int = 0
     # Common-Alarm-Model-style layer + topology-based root-cause linkage -
     # see app.correlation. peering_id is set only for L1 incidents that
     # stem from a specific fiber link (app.fiber_faults); root_cause_
@@ -163,7 +181,13 @@ class IncidentOut(BaseModel):
     fault_location: FaultLocation | None = None
 
 
-class BulkResolveIn(BaseModel):
+class ResolveIn(BaseModel):
+    # One of models.USER_RESOLUTION_REASONS.
+    reason: ResolutionReason
+    note: str | None = None
+
+
+class BulkResolveIn(ResolveIn):
     incident_ids: list[int]
 
 
@@ -321,6 +345,8 @@ class StatsSummary(BaseModel):
     # (see app.impact), and how many of those have actually lost service.
     customers_impacted: int = 0
     customers_down: int = 0
+    # Fleet-wide open incidents waiting for someone to pick them up.
+    incidents_in_triage: int = 0
 
 
 class LoginIn(BaseModel):

@@ -15,6 +15,18 @@ class Settings:
     flap_window_seconds: int = int(os.getenv("FLAP_WINDOW_SECONDS", "600"))
     flap_transition_threshold: int = int(os.getenv("FLAP_TRANSITION_THRESHOLD", "4"))
 
+    # Incident workflow (see app.incidents). A new incident waits this long
+    # before auto-heal runs, so an L1 alarm arriving slightly after its L3
+    # symptoms can still claim them (and a link that recovers on its own
+    # within it never gets touched at all).
+    incident_settle_seconds: int = int(os.getenv("INCIDENT_SETTLE_SECONDS", "20"))
+    # How long a successful auto-heal waits for the device's own clear trap
+    # (linkUp, bgpEstablished, ...) before it's escalated to triage.
+    incident_monitoring_timeout_seconds: int = int(os.getenv("INCIDENT_MONITORING_TIMEOUT_SECONDS", "600"))
+    # Where the UI is reachable, e.g. https://ncr.example.com - used to put a
+    # link back to the incident in team notification emails. No link if unset.
+    public_base_url: str = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+
     # Synthetic fiber-cut generator (app.fiber_faults) - demo/dev only. Off by
     # default so production never sees fake OPTICAL_ALARM/ISIS incidents;
     # docker-compose.dev.yml turns it on alongside the trap simulator.

@@ -57,6 +57,42 @@ class IncidentStatus(str, enum.Enum):
     RESOLVED = "resolved"
 
 
+class IncidentStage(str, enum.Enum):
+    """Where an incident is in the handling workflow - finer-grained than
+    `status`, which stays the coarse open/resolved flag everything else
+    (impact, stats, map) filters on. See app.incidents.service for every
+    transition."""
+
+    NEW = "new"  # just opened, waiting out the settle window before auto-heal
+    SUPPRESSED = "suppressed"  # symptom of an open L1 root cause, no action of its own
+    MONITORING = "monitoring"  # auto-heal succeeded, waiting for the clear trap to confirm it
+    TRIAGE = "triage"  # needs a human: notify-only type, failed fix, or unconfirmed fix
+    ACKNOWLEDGED = "acknowledged"  # an operator owns it
+    DISPATCHED = "dispatched"  # handed to a SOC/maintenance team, waiting on them
+    RESOLVED = "resolved"
+
+
+class ResolutionReason(str, enum.Enum):
+    # Picked by an operator when resolving by hand.
+    FIXED = "fixed"
+    FALSE_POSITIVE = "false_positive"
+    MAINTENANCE = "maintenance"
+    DUPLICATE = "duplicate"
+    # Set by the system.
+    AUTO_CLEARED = "auto_cleared"  # the device sent its own clear trap (linkUp, bgpEstablished, ...)
+    AUTO_HEALED = "auto_healed"  # auto-heal succeeded and the type has no clear trap to wait for
+    ROOT_CAUSE_RESOLVED = "root_cause_resolved"  # resolved along with its root cause
+    RESET = "reset"  # admin "reset all open incidents"
+
+
+USER_RESOLUTION_REASONS = {
+    ResolutionReason.FIXED,
+    ResolutionReason.FALSE_POSITIVE,
+    ResolutionReason.MAINTENANCE,
+    ResolutionReason.DUPLICATE,
+}
+
+
 class AlarmLayer(str, enum.Enum):
     L1 = "L1"  # physical/optical (fiber, amplifiers, transceivers)
     L3 = "L3"  # control-plane/logical (BGP, IS-IS, interfaces)
@@ -194,10 +230,25 @@ class Incident(Base):
     closed_at = Column(DateTime(timezone=True), nullable=True)
     trap_count = Column(Integer, default=1)
     description = Column(String(255), nullable=True)
-    # True when a human resolved this via the UI/API rather than the
-    # classifier itself (e.g. a linkUp trap, or auto-heal marking a
-    # transient event as handled).
+    # Superseded by resolved_by/resolution_reason below - still written
+    # (it's NOT NULL in existing databases) but no longer read.
     resolved_manually = Column(Boolean, default=False, nullable=False)
+    # Workflow stage + ownership - see IncidentStage and
+    # app.incidents.service. All nullable so add_missing_columns() can add
+    # them to an existing database; rows from before they existed are
+    # backfilled by app.incidents.service.backfill_stages.
+    stage = Column(Enum(IncidentStage, native_enum=False, length=16), nullable=True, index=True)
+    stage_changed_at = Column(DateTime(timezone=True), nullable=True)
+    # From the trap that opened it (critical/warning/info - see oid_map).
+    severity = Column(String(16), nullable=True)
+    # "P1" (most urgent) .. "P4" - see app.incidents.service.compute_priority.
+    priority = Column(String(2), nullable=True, index=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+    # "system", or the username of whoever resolved it.
+    resolved_by = Column(String(64), nullable=True)
+    resolution_reason = Column(Enum(ResolutionReason, native_enum=False, length=32), nullable=True)
+    resolution_note = Column(String(255), nullable=True)
     # Common-Alarm-Model-style layer, derived automatically from
     # incident_type (see INCIDENT_LAYER above) - used by app.correlation to
     # rank an L1 (physical) alarm above any L3 (control-plane) symptom on
@@ -207,10 +258,11 @@ class Incident(Base):
     # app.fiber_faults) - lets root-cause lookup walk "this peering has an
     # open physical fault" without guessing which endpoint router owns it.
     peering_id = Column(Integer, ForeignKey("bgp_peerings.id"), nullable=True, index=True)
-    # Set by app.correlation.try_link_root_cause when this (L3) incident
-    # opened while an L1 incident was already open on a peering it belongs
-    # to - marks it as a symptom rather than an independent problem, so it's
-    # excluded from auto-heal and can be suppressed from the top-level view.
+    # Set when this (L3) incident is correlated with an L1 incident on a
+    # peering it belongs to, whichever of the two opened first (see
+    # app.correlation, app.incidents.service) - marks it as a symptom
+    # rather than an independent problem, so it's excluded from auto-heal
+    # and suppressed from the top-level view.
     root_cause_incident_id = Column(Integer, ForeignKey("incidents.id"), nullable=True, index=True)
     # For a peering-scoped fiber cut: which span of the run lost signal, as
     # reported by the alarm (FIBER_SEGMENT_OID) - see app.fault_location.
@@ -222,6 +274,13 @@ class Incident(Base):
     peering = relationship("BgpPeering")
     root_cause = relationship("Incident", remote_side=[id], back_populates="symptomatic_incidents")
     symptomatic_incidents = relationship("Incident", back_populates="root_cause")
+    # selectin, not joined: the sweeper locks incident rows FOR UPDATE, which
+    # Postgres refuses on the nullable side of an outer join.
+    owner = relationship("User", lazy="selectin")
+
+    @property
+    def owner_username(self) -> str | None:
+        return self.owner.username if self.owner else None
 
 
 class RouterConfigBackup(Base):

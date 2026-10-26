@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.impact import impact_totals
-from app.models import Incident, IncidentStatus, Router, RouterStatus, RouterType
+from app.models import Incident, IncidentStage, IncidentStatus, Router, RouterStatus, RouterType
 from app.schemas import StatsSummary
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
@@ -40,6 +40,10 @@ def summary(db: Session = Depends(get_db)):
     incidents_by_type = {incident_type.value: count for incident_type, count in rows}
     # Fleet-wide, not primary-scoped: the whole point is customer impact.
     customers_impacted, customers_down = impact_totals(db)
+    # Fleet-wide too: anything waiting on a human, wherever it is.
+    incidents_in_triage = (
+        db.query(Incident).filter(Incident.status == IncidentStatus.OPEN, Incident.stage == IncidentStage.TRIAGE).count()
+    )
 
     return StatsSummary(
         total_routers=total_routers,
@@ -51,4 +55,5 @@ def summary(db: Session = Depends(get_db)):
         incidents_by_type=incidents_by_type,
         customers_impacted=customers_impacted,
         customers_down=customers_down,
+        incidents_in_triage=incidents_in_triage,
     )

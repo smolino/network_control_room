@@ -118,15 +118,26 @@ export function fetchIncidentRemediation(id) {
   return getJSON(`/incidents/${id}/remediation`);
 }
 
-export function fetchIncidents({ status, incidentType, routerId, routerType, limit = 200 } = {}) {
+export function fetchIncidents({ status, stage, incidentType, routerId, routerType, limit = 200 } = {}) {
   const params = new URLSearchParams();
   if (status) params.set("status", status);
+  if (stage) params.set("stage", stage);
   if (incidentType) params.set("incident_type", incidentType);
   if (routerId) params.set("router_id", routerId);
   if (routerType) params.set("router_type", routerType);
   if (limit) params.set("limit", limit);
   const qs = params.toString();
   return getJSON(`/incidents${qs ? `?${qs}` : ""}`);
+}
+
+export function fetchIncident(id) {
+  return getJSON(`/incidents/${id}`);
+}
+
+// Everything a person has to act on (triage / acknowledged / dispatched),
+// most urgent first - see backend/app/incidents/service.py:queue.
+export function fetchIncidentQueue() {
+  return getJSON("/incidents/queue");
 }
 
 // Current blast radius incl. every affected router id, or null - see
@@ -139,13 +150,28 @@ export function fetchStats() {
   return getJSON("/stats/summary");
 }
 
-export function resolveIncident(id) {
-  return postJSON(`/incidents/${id}/resolve`);
+export function acknowledgeIncident(id) {
+  return postJSON(`/incidents/${id}/ack`);
 }
 
-export function bulkResolveIncidents(incidentIds) {
-  return postJSON("/incidents/resolve", { incident_ids: incidentIds });
+// reason: one of RESOLUTION_REASONS below. Also resolves the incident's
+// symptoms; a symptom on its own can't be resolved (409).
+export function resolveIncident(id, { reason, note }) {
+  return postJSON(`/incidents/${id}/resolve`, { reason, note: note || null });
 }
+
+// Root incidents only - symptom ids are skipped and go with their root.
+export function bulkResolveIncidents(incidentIds, { reason, note }) {
+  return postJSON("/incidents/resolve", { incident_ids: incidentIds, reason, note: note || null });
+}
+
+// The reasons an operator can pick (backend: models.USER_RESOLUTION_REASONS).
+export const RESOLUTION_REASONS = [
+  { value: "fixed", label: "Fixed" },
+  { value: "false_positive", label: "False positive" },
+  { value: "maintenance", label: "Planned maintenance" },
+  { value: "duplicate", label: "Duplicate" },
+];
 
 export function resolveAllOpenIncidents() {
   return postJSON("/incidents/resolve-all");

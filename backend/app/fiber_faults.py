@@ -15,7 +15,7 @@ those alarms flow through the pipeline:
    (NOTIFY_ONLY, same as any other optical alarm) - this is the root cause.
 2. One member interface on each side's InterfaceBundle for that peering is
    flapped down, then back up - the resulting ISIS_NBR_DOWN incidents get
-   correlated (see app.correlation.try_link_root_cause) via the Neo4j
+   correlated (see app.incidents.service, app.correlation) via the Neo4j
    topology graph and marked symptomatic of the fiber cut instead of
    treated as independent problems, and never get their own auto-heal
    attempt.

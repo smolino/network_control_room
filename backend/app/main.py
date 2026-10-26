@@ -8,8 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import auth, backups, bgp, geocode, incidents, router_models, routers, simulation, stats, teams, traps, users
 from app.auth import authenticate_websocket_token, require_viewer, seed_default_admin
 from app.config import settings
-from app.db import init_db
+from app.db import SessionLocal, init_db
 from app.fiber_faults import fiber_fault_loop
+from app.incidents.service import backfill_stages
 from app.snmp.trap_listener import start_trap_listener
 from app.streaming import ws_relay
 from app.streaming.producer import get_producer
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    with SessionLocal() as db:
+        backfill_stages(db)
     seed_default_admin()
     await asyncio.to_thread(bgp.repair_peering_bundles)
     # Pre-warm the Kafka producer off the event loop before anything can

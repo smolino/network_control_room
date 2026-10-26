@@ -55,9 +55,9 @@ const LINK_SELECT_COLOR = "#a855f7";
 const MARKER_STROKE = "#0b0f1a";
 const ALERT_STROKE = "#f97316";
 // Dashed ring for a router that's an endpoint of a peering with an open L1
-// (fiber) incident, but hasn't itself failed auto-heal - distinguishes
+// (fiber) incident, but has nothing of its own in triage - distinguishes
 // "symptomatic of an upstream physical fault" from the solid ALERT_STROKE
-// ring, which means this router's own remediation attempt failed.
+// ring, which means this router has an incident nobody has picked up yet.
 const SYMPTOMATIC_STROKE = "#fb923c";
 
 // Halo around every router in a highlighted incident's blast radius (see
@@ -65,8 +65,8 @@ const SYMPTOMATIC_STROKE = "#fb923c";
 // amber when they're only running on reduced redundancy.
 const IMPACT_COLOR = { outage: "#f87171", degraded: "#facc15" };
 
-// Blink cadence for routers whose auto-heal attempt failed to fix the
-// problem - stops on its own once the router recovers, since
+// Blink cadence for routers with an incident in triage (needs_attention) -
+// stops on its own once it's acknowledged, dispatched or resolved, since
 // needs_attention flips back to false server-side at that point.
 const BLINK_INTERVAL_MS = 500;
 
@@ -146,7 +146,7 @@ function RouterMarker({
   const shouldBlink = r.needs_attention || connectionIssue;
   const alerting = shouldBlink && blinkOn;
   const statusColor = r.router_type === "customer" ? CUSTOMER_STATUS_COLOR : STATUS_COLOR;
-  // needs_attention (solid ring, own remediation failed) always wins over
+  // needs_attention (solid ring, own incident in triage) always wins over
   // symptomatic (dashed ring, upstream fiber cut correlated to this router).
   const showSymptomaticRing = symptomatic && !r.needs_attention;
   return (
@@ -185,7 +185,7 @@ function RouterMarker({
             </div>
             {r.needs_attention && (
               <div style={{ color: ALERT_STROKE, fontWeight: 600, marginTop: "0.25rem" }}>
-                ⚠ auto-heal failed — needs attention
+                ⚠ incident in triage — needs attention
               </div>
             )}
             {connectionIssue && !r.needs_attention && (
@@ -283,7 +283,7 @@ export default function MapView({
     return ids;
   }, [openL1Peerings]);
 
-  // Gates the blink interval below - covers the existing "auto-heal failed"
+  // Gates the blink interval below - covers the existing "incident in triage"
   // case, a customer CPE's own down/flapping status (see connectionIssue in
   // RouterMarker), and now an open L1 fiber incident's pulsing fault
   // segment, so the interval only runs while something actually needs it
