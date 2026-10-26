@@ -604,19 +604,36 @@ async def boot_sequence(engine, target, routers: list[dict], delay: float = 0.05
         await asyncio.sleep(delay)
 
 
+def demo_fleet_seeding_enabled() -> bool:
+    """False once an admin has used Settings > Simulation > "Delete entire
+    fleet" - from then on the map should only show what's been added
+    since, not come back with the demo fleet on every restart."""
+    try:
+        resp = requests.get(f"{BACKEND_API_URL}/api/simulation/status", timeout=10)
+        resp.raise_for_status()
+        return resp.json().get("seed_demo_fleet", True)
+    except requests.RequestException as exc:
+        logger.warning("Couldn't read the demo-fleet seeding flag, seeding anyway: %s", exc)
+        return True
+
+
 async def main() -> None:
-    routers = load_primary_routers()
-    seed_routers(routers)
+    if demo_fleet_seeding_enabled():
+        routers = load_primary_routers()
+        seed_routers(routers)
 
-    # Customers reference their primary by mgmt_ip, so they must be seeded
-    # after the primaries already exist in the backend.
-    customers = load_customer_routers()
-    seed_routers(customers)
+        # Customers reference their primary by mgmt_ip, so they must be seeded
+        # after the primaries already exist in the backend.
+        customers = load_customer_routers()
+        seed_routers(customers)
 
-    bgp_pairs = load_bgp_topology()
-    seed_bgp_topology(bgp_pairs)
-    peer_adjacency = build_peer_adjacency(bgp_pairs)
-    fleet = Fleet(routers, customers, peer_adjacency, build_bgp_bundles(peer_adjacency))
+        bgp_pairs = load_bgp_topology()
+        seed_bgp_topology(bgp_pairs)
+        peer_adjacency = build_peer_adjacency(bgp_pairs)
+        fleet = Fleet(routers, customers, peer_adjacency, build_bgp_bundles(peer_adjacency))
+    else:
+        logger.info("Demo fleet seeding is off (fleet deleted from Settings) - simulating only the backend's fleet")
+        fleet = Fleet([], [], {}, {})
 
     # From here on, simulate whatever the backend actually has - which
     # includes anything added from the UI or by bulk upload, not just the

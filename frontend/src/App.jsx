@@ -174,6 +174,16 @@ export default function App() {
     await reloadTeams();
   }, [reloadTeams]);
 
+  // After "Delete entire fleet": drop anything pointing at routers or
+  // incidents that no longer exist, then reload the (now empty) fleet.
+  const resetAfterFleetDelete = useCallback(() => {
+    setSelectedRouterId(null);
+    setImpactHighlight(null);
+    setFaultHighlight(null);
+    setFocusIncidentId(null);
+    reloadAll().catch(console.error);
+  }, [reloadAll]);
+
   useEffect(() => {
     if (!authenticated) return;
     reloadAll().catch(console.error);
@@ -206,6 +216,13 @@ export default function App() {
             };
             return next;
           });
+          return;
+        }
+
+        // Every router and link is gone (Settings > Simulation > Delete
+        // entire fleet, possibly from another browser) - start clean.
+        if (msg.type === "fleet_reset") {
+          resetAfterFleetDelete();
           return;
         }
 
@@ -249,7 +266,7 @@ export default function App() {
       clearTimeout(retryTimer);
       ws?.close();
     };
-  }, [authenticated, logout]);
+  }, [authenticated, logout, resetAfterFleetDelete]);
 
   const selectedRouter = routers.find((r) => r.id === selectedRouterId) || null;
 
@@ -317,6 +334,7 @@ export default function App() {
           onSessionChanged={handleSessionChanged}
           teams={teams}
           onTeamsChanged={reloadTeams}
+          onFleetReset={resetAfterFleetDelete}
           onClose={() => setShowSettings(false)}
         />
       )}

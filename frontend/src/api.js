@@ -251,6 +251,13 @@ export function setSimulationEnabled(enabled) {
   return postJSON("/simulation/status", { enabled });
 }
 
+// Admin-only: deletes every router, BGP link and their whole history, and
+// stops the simulator re-seeding its demo fleet - see
+// backend/app/api/simulation.py:reset_fleet.
+export function resetFleet() {
+  return postJSON("/simulation/reset-fleet");
+}
+
 export function connectEvents(onMessage) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const token = encodeURIComponent(getToken() ?? "");

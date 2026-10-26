@@ -146,3 +146,11 @@ def interfaces_for_peering(peering_id: int) -> list[tuple[int, str]]:
             peering_id=peering_id,
         )
         return [(record["router_id"], record["name"]) for record in result]
+
+
+def clear_topology() -> None:
+    """Drops the whole topology graph - "Delete entire fleet" (see
+    api/simulation.py:reset_fleet). Re-populated by api/bgp.py:seed_peerings
+    as links are added again."""
+    with get_driver().session() as session:
+        session.run("MATCH (n) WHERE n:Router OR n:Interface OR n:FiberSpan DETACH DELETE n")

@@ -455,3 +455,15 @@ class User(Base):
     otp_secret = Column(String(64), nullable=True)
     session_epoch = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AppSetting(Base):
+    """Small persistent key/value settings that have to survive a restart -
+    e.g. `seed_demo_fleet`, cleared by "Delete entire fleet" (see
+    api/simulation.py) so the simulator doesn't re-seed its demo fleet the
+    next time it starts."""
+
+    __tablename__ = "app_settings"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(String(255), nullable=False)

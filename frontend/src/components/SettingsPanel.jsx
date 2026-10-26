@@ -10,6 +10,7 @@ import {
   enableOtp,
   fetchSimulationStatus,
   fetchUsers,
+  resetFleet,
   resolveAllOpenIncidents,
   setSimulationEnabled,
   startOtpSetup,
@@ -24,7 +25,7 @@ const ROLE_HINT = {
   admin: "+ fleet, teams, simulation, users",
 };
 
-export default function SettingsPanel({ teams, onTeamsChanged, onSessionChanged, onClose }) {
+export default function SettingsPanel({ teams, onTeamsChanged, onSessionChanged, onFleetReset, onClose }) {
   const isAdmin = useHasRole("admin");
   const [tab, setTab] = useState("security");
 
@@ -58,7 +59,7 @@ export default function SettingsPanel({ teams, onTeamsChanged, onSessionChanged,
         {tab === "security" && <SecurityTab onSessionChanged={onSessionChanged} />}
         {tab === "users" && isAdmin && <UsersTab />}
         {tab === "teams" && <TeamsTab teams={teams} onChanged={onTeamsChanged} />}
-        {tab === "simulation" && <SimulationTab />}
+        {tab === "simulation" && <SimulationTab onFleetReset={onFleetReset} />}
       </div>
     </div>
   );
@@ -588,7 +589,7 @@ function TeamsTab({ teams, onChanged }) {
   );
 }
 
-function SimulationTab() {
+function SimulationTab({ onFleetReset }) {
   const isAdmin = useHasRole("admin");
   const [enabled, setEnabled] = useState(null);
   const [error, setError] = useState("");
@@ -640,6 +641,7 @@ function SimulationTab() {
       )}
 
       {isAdmin && <ResetIncidents />}
+      {isAdmin && <DeleteFleet onFleetReset={onFleetReset} />}
     </>
   );
 }
@@ -683,6 +685,66 @@ function ResetIncidents() {
       {message && <div className="form-success">{message}</div>}
       <button className="login-submit" onClick={reset} disabled={resetting}>
         {resetting ? "Resetting…" : "Reset all open incidents"}
+      </button>
+    </>
+  );
+}
+
+const DELETE_FLEET_CONFIRMATION = "DELETE";
+
+// Wipes the fleet so the map starts from scratch - see
+// backend/app/api/simulation.py:reset_fleet.
+function DeleteFleet({ onFleetReset }) {
+  const [confirmation, setConfirmation] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const remove = async () => {
+    setDeleting(true);
+    setMessage("");
+    setError("");
+    try {
+      const deleted = await resetFleet();
+      setConfirmation("");
+      setMessage(
+        `Deleted ${deleted.routers} routers, ${deleted.bgp_links} BGP links and ${deleted.incidents} incidents. ` +
+          "Add routers again from Add Fleet."
+      );
+      onFleetReset?.();
+    } catch (err) {
+      setError(`Couldn't delete the fleet: ${err.message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <>
+      <h3>Delete entire fleet</h3>
+      <p className="settings-hint">
+        Removes every router, BGP link and repeater, and everything recorded about them: incidents, traps,
+        configuration backups and auto-heal history. Users, teams and router models are kept. The simulator stops
+        re-seeding its demo fleet, so the map stays empty until you add routers from Add Fleet. This cannot be undone.
+      </p>
+      {error && <div className="login-error">{error}</div>}
+      {message && <div className="form-success">{message}</div>}
+      <label className="settings-hint" style={{ display: "block", marginBottom: "0.4rem" }}>
+        Type <strong>{DELETE_FLEET_CONFIRMATION}</strong> to confirm
+        <input
+          value={confirmation}
+          onChange={(e) => setConfirmation(e.target.value)}
+          style={{ display: "block", width: "100%", marginTop: "0.3rem" }}
+          aria-label="Type DELETE to confirm"
+        />
+      </label>
+      <button
+        className="login-submit"
+        style={{ background: "#b91c1c" }}
+        onClick={remove}
+        disabled={deleting || confirmation !== DELETE_FLEET_CONFIRMATION}
+      >
+        {deleting ? "Deleting…" : "Delete entire fleet"}
       </button>
     </>
   );
