@@ -38,5 +38,9 @@ services:
       TICK_MAX_SECONDS: 40
       CUSTOMER_TICK_MIN_SECONDS: 60
       CUSTOMER_TICK_MAX_SECONDS: 120
+      # Scale the random event streams with fleet size - average seconds
+      # between random events for any one primary/customer (0 = off).
+      PRIMARY_EVENT_INTERVAL_SECONDS: ${PRIMARY_EVENT_INTERVAL_SECONDS:-7200}
+      CUSTOMER_EVENT_INTERVAL_SECONDS: ${CUSTOMER_EVENT_INTERVAL_SECONDS:-172800}
       BGP_INCIDENT_INTERVAL_SECONDS: 600
       BUNDLE_FAILURE_INTERVAL_SECONDS: 900

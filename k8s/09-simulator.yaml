@@ -49,6 +49,10 @@ spec:
               valueFrom: {configMapKeyRef: {name: ncr-config, key: CUSTOMER_TICK_MIN_SECONDS}}
             - name: CUSTOMER_TICK_MAX_SECONDS
               valueFrom: {configMapKeyRef: {name: ncr-config, key: CUSTOMER_TICK_MAX_SECONDS}}
+            - name: PRIMARY_EVENT_INTERVAL_SECONDS
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: PRIMARY_EVENT_INTERVAL_SECONDS}}
+            - name: CUSTOMER_EVENT_INTERVAL_SECONDS
+              valueFrom: {configMapKeyRef: {name: ncr-config, key: CUSTOMER_EVENT_INTERVAL_SECONDS}}
             - name: BGP_INCIDENT_INTERVAL_SECONDS
               valueFrom: {configMapKeyRef: {name: ncr-config, key: BGP_INCIDENT_INTERVAL_SECONDS}}
             - name: BUNDLE_FAILURE_INTERVAL_SECONDS

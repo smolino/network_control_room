@@ -899,5 +899,6 @@ python3 generate_customer_routers.py   # rewrites customer_routers_seed.json (10
 | `FLAP_QUIET_MIN_SECONDS` / `FLAP_QUIET_MAX_SECONDS` | simulator | `300` / `600` | Quiet period between the flapping routers'/bundles' flap bursts |
 | `TICK_MIN_SECONDS` / `TICK_MAX_SECONDS` | simulator | `20` / `40` | Pace of the primary event stream |
 | `CUSTOMER_TICK_MIN_SECONDS` / `CUSTOMER_TICK_MAX_SECONDS` | simulator | `60` / `120` | Pace of the (much quieter) customer event stream |
+| `PRIMARY_EVENT_INTERVAL_SECONDS` / `CUSTOMER_EVENT_INTERVAL_SECONDS` | simulator | `7200` / `172800` | Scales both event streams with fleet size: the average time between random events for any one primary (2h) / customer (2 days). Once `interval / fleet size` is shorter than the `TICK_*` range the streams speed up to match, so routers added by bulk upload don't wait hours or days for their first event; small fleets keep the `TICK_*` pace. `0` turns scaling off |
 | `BGP_INCIDENT_INTERVAL_SECONDS` | simulator | `600` | Cadence of a guaranteed logical BGP flap (session-level, bundle unaffected) |
 | `BUNDLE_FAILURE_INTERVAL_SECONDS` | simulator | `900` | Cadence of a guaranteed full bundle failure (every member down — redundancy exhausted, peering actually drops) |

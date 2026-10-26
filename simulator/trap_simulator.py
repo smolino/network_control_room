@@ -78,6 +78,15 @@ FLAP_QUIET_MIN_SECONDS = float(os.getenv("FLAP_QUIET_MIN_SECONDS", "300"))
 FLAP_QUIET_MAX_SECONDS = float(os.getenv("FLAP_QUIET_MAX_SECONDS", "600"))
 CUSTOMER_TICK_MIN_SECONDS = float(os.getenv("CUSTOMER_TICK_MIN_SECONDS", "60"))
 CUSTOMER_TICK_MAX_SECONDS = float(os.getenv("CUSTOMER_TICK_MAX_SECONDS", "120"))
+# Scale the random event streams with fleet size: the average time between
+# random events for any *one* router. The TICK_* ranges above fix the total
+# rate regardless of fleet size, so after a bulk upload to thousands of
+# routers each one would otherwise wait hours (primaries) or days
+# (customers) for its first event. The tick shrinks to interval/fleet_size
+# once that's shorter than the TICK_* range; a small fleet keeps the TICK_*
+# pace. 0 turns scaling off.
+PRIMARY_EVENT_INTERVAL_SECONDS = float(os.getenv("PRIMARY_EVENT_INTERVAL_SECONDS", "7200"))
+CUSTOMER_EVENT_INTERVAL_SECONDS = float(os.getenv("CUSTOMER_EVENT_INTERVAL_SECONDS", "172800"))
 # Guarantees a primary-to-primary BGP incident at a fixed cadence, on top of
 # whatever random_event_loop's dice rolls happen to produce - so the
 # reroute-path feature always has something to demo within a bounded wait
@@ -385,75 +394,103 @@ async def down_router_loop(engine, target, router: dict, interfaces: list[str]) 
         await asyncio.sleep(random.uniform(300, 600))
 
 
+def event_tick(tick_min: float, tick_max: float, per_router_interval: float, fleet_size: int) -> float:
+    """Seconds until the next random event - see PRIMARY_EVENT_INTERVAL_SECONDS."""
+    tick = random.uniform(tick_min, tick_max)
+    if per_router_interval <= 0 or fleet_size == 0:
+        return tick
+    scaled = per_router_interval / fleet_size
+    return random.uniform(0.5 * scaled, 1.5 * scaled) if scaled < tick else tick
+
+
+# Strong references to in-flight events - asyncio only keeps weak ones, so an
+# unreferenced task can be garbage-collected mid-way through.
+_running_events: set[asyncio.Task] = set()
+
+
+def spawn(coro) -> None:
+    """Runs one event (e.g. a linkDown, a wait, then the linkUp) without
+    blocking the loop that fired it, so the next event isn't delayed by this
+    one's own down/up wait."""
+    task = asyncio.create_task(coro)
+    _running_events.add(task)
+    task.add_done_callback(_running_events.discard)
+
+
 async def random_event_loop(engine, target, fleet: Fleet) -> None:
     while True:
-        await asyncio.sleep(random.uniform(TICK_MIN_SECONDS, TICK_MAX_SECONDS))
+        await asyncio.sleep(
+            event_tick(TICK_MIN_SECONDS, TICK_MAX_SECONDS, PRIMARY_EVENT_INTERVAL_SECONDS, len(fleet.primaries))
+        )
         if not fleet.primaries:
             continue
-        router = random.choice(fleet.primaries)
-        peer_adjacency, primary_interfaces, bgp_bundles = fleet.peer_adjacency, fleet.primary_interfaces, fleet.bgp_bundles
-        roll = random.random()
+        spawn(primary_event(engine, target, fleet, random.choice(fleet.primaries)))
 
-        if roll < 0.08:
-            await send_trap(engine, target, AUTH_FAILURE_OID, router)
-        elif roll < 0.16:
-            peers = peer_adjacency.get(router["mgmt_ip"], [])
-            if peers:
-                peer_ip = random.choice(peers)
-                bundle = bgp_bundles.get(router["mgmt_ip"], {}).get(peer_ip, {})
-                iface = bundle.get("bundle")
-                await send_trap(engine, target, BGP_BACKWARD_TRANSITION_OID, router, interface=iface, bgp_peer_ip=peer_ip)
-                await asyncio.sleep(random.uniform(5, 20))
-                await send_trap(engine, target, BGP_ESTABLISHED_OID, router, interface=iface, bgp_peer_ip=peer_ip)
-        elif roll < 0.22:
-            await send_trap(engine, target, CISCO_CPU_RISING_OID, router)
-        elif roll < 0.27:
-            await send_trap(engine, target, CISCO_ENV_TEMP_OID, router)
-        elif roll < 0.32:
-            await send_trap(engine, target, CISCO_CONFIG_MAN_OID, router)
-        elif roll < 0.38:
-            # BFD rides the same backbone links as BGP (fast failure detection
-            # protecting the same peering), so it reuses the BGP adjacency/
-            # bundle maps rather than a separate IGP topology model. It
-            # names the bundle itself (session/logical layer), not a member.
-            peers = peer_adjacency.get(router["mgmt_ip"], [])
-            if peers:
-                peer_ip = random.choice(peers)
-                bundle = bgp_bundles.get(router["mgmt_ip"], {}).get(peer_ip, {})
-                iface = bundle.get("bundle")
-                await send_trap(engine, target, BFD_SESSION_DOWN_OID, router, interface=iface, bgp_peer_ip=peer_ip)
-        elif roll < 0.44:
-            # IS-IS (the IGP) manages physical adjacency per bundle member,
-            # not per bundle - a routine single-member blip like this one is
-            # exactly the case bundle redundancy is meant to absorb, so it
-            # never affects the peering (compare scheduled_bundle_failure_loop,
-            # which takes every member down together for a real outage).
-            peers = peer_adjacency.get(router["mgmt_ip"], [])
-            if peers:
-                peer_ip = random.choice(peers)
-                bundle = bgp_bundles.get(router["mgmt_ip"], {}).get(peer_ip, {})
-                members = bundle.get("members") or []
-                if members:
-                    member = random.choice(members)
-                    await send_trap(engine, target, ISIS_ADJACENCY_DOWN_OID, router, interface=member, bgp_peer_ip=peer_ip)
-                    await asyncio.sleep(random.uniform(5, 20))
-                    await send_trap(engine, target, ISIS_ADJACENCY_UP_OID, router, interface=member, bgp_peer_ip=peer_ip)
-        elif roll < 0.50:
-            ifaces = primary_interfaces.get(router["mgmt_ip"]) or INTERFACES
-            await send_trap(engine, target, CISCO_OPTICAL_RX_POWER_OID, router, interface=random.choice(ifaces))
-        elif roll < 0.54:
-            await send_trap(engine, target, CISCO_ENV_FAN_OID, router)
-        elif roll < 0.58:
-            await send_trap(engine, target, CISCO_ENV_SUPPLY_OID, router)
-        elif roll < 0.63:
-            await send_trap(engine, target, CISCO_MEMORY_LOW_OID, router)
-        elif roll < 0.82:
-            ifaces = primary_interfaces.get(router["mgmt_ip"]) or INTERFACES
-            interface = random.choice(ifaces)
-            await send_trap(engine, target, LINK_DOWN_OID, router, interface)
+
+async def primary_event(engine, target, fleet: Fleet, router: dict) -> None:
+    peer_adjacency, primary_interfaces, bgp_bundles = fleet.peer_adjacency, fleet.primary_interfaces, fleet.bgp_bundles
+    roll = random.random()
+
+    if roll < 0.08:
+        await send_trap(engine, target, AUTH_FAILURE_OID, router)
+    elif roll < 0.16:
+        peers = peer_adjacency.get(router["mgmt_ip"], [])
+        if peers:
+            peer_ip = random.choice(peers)
+            bundle = bgp_bundles.get(router["mgmt_ip"], {}).get(peer_ip, {})
+            iface = bundle.get("bundle")
+            await send_trap(engine, target, BGP_BACKWARD_TRANSITION_OID, router, interface=iface, bgp_peer_ip=peer_ip)
             await asyncio.sleep(random.uniform(5, 20))
-            await send_trap(engine, target, LINK_UP_OID, router, interface)
-        # else: quiet tick, nothing happens
+            await send_trap(engine, target, BGP_ESTABLISHED_OID, router, interface=iface, bgp_peer_ip=peer_ip)
+    elif roll < 0.22:
+        await send_trap(engine, target, CISCO_CPU_RISING_OID, router)
+    elif roll < 0.27:
+        await send_trap(engine, target, CISCO_ENV_TEMP_OID, router)
+    elif roll < 0.32:
+        await send_trap(engine, target, CISCO_CONFIG_MAN_OID, router)
+    elif roll < 0.38:
+        # BFD rides the same backbone links as BGP (fast failure detection
+        # protecting the same peering), so it reuses the BGP adjacency/
+        # bundle maps rather than a separate IGP topology model. It
+        # names the bundle itself (session/logical layer), not a member.
+        peers = peer_adjacency.get(router["mgmt_ip"], [])
+        if peers:
+            peer_ip = random.choice(peers)
+            bundle = bgp_bundles.get(router["mgmt_ip"], {}).get(peer_ip, {})
+            iface = bundle.get("bundle")
+            await send_trap(engine, target, BFD_SESSION_DOWN_OID, router, interface=iface, bgp_peer_ip=peer_ip)
+    elif roll < 0.44:
+        # IS-IS (the IGP) manages physical adjacency per bundle member,
+        # not per bundle - a routine single-member blip like this one is
+        # exactly the case bundle redundancy is meant to absorb, so it
+        # never affects the peering (compare scheduled_bundle_failure_loop,
+        # which takes every member down together for a real outage).
+        peers = peer_adjacency.get(router["mgmt_ip"], [])
+        if peers:
+            peer_ip = random.choice(peers)
+            bundle = bgp_bundles.get(router["mgmt_ip"], {}).get(peer_ip, {})
+            members = bundle.get("members") or []
+            if members:
+                member = random.choice(members)
+                await send_trap(engine, target, ISIS_ADJACENCY_DOWN_OID, router, interface=member, bgp_peer_ip=peer_ip)
+                await asyncio.sleep(random.uniform(5, 20))
+                await send_trap(engine, target, ISIS_ADJACENCY_UP_OID, router, interface=member, bgp_peer_ip=peer_ip)
+    elif roll < 0.50:
+        ifaces = primary_interfaces.get(router["mgmt_ip"]) or INTERFACES
+        await send_trap(engine, target, CISCO_OPTICAL_RX_POWER_OID, router, interface=random.choice(ifaces))
+    elif roll < 0.54:
+        await send_trap(engine, target, CISCO_ENV_FAN_OID, router)
+    elif roll < 0.58:
+        await send_trap(engine, target, CISCO_ENV_SUPPLY_OID, router)
+    elif roll < 0.63:
+        await send_trap(engine, target, CISCO_MEMORY_LOW_OID, router)
+    elif roll < 0.82:
+        ifaces = primary_interfaces.get(router["mgmt_ip"]) or INTERFACES
+        interface = random.choice(ifaces)
+        await send_trap(engine, target, LINK_DOWN_OID, router, interface)
+        await asyncio.sleep(random.uniform(5, 20))
+        await send_trap(engine, target, LINK_UP_OID, router, interface)
+    # else: quiet tick, nothing happens
 
 
 async def scheduled_bgp_incident_loop(engine, target, fleet: Fleet) -> None:
@@ -524,33 +561,40 @@ async def customer_event_loop(engine, target, fleet: Fleet) -> None:
     backbone-grade telemetry - and the uplink link-down/up blip stays the
     dominant event, matching a CPE's single physical port."""
     while True:
-        await asyncio.sleep(random.uniform(CUSTOMER_TICK_MIN_SECONDS, CUSTOMER_TICK_MAX_SECONDS))
+        await asyncio.sleep(
+            event_tick(
+                CUSTOMER_TICK_MIN_SECONDS, CUSTOMER_TICK_MAX_SECONDS, CUSTOMER_EVENT_INTERVAL_SECONDS, len(fleet.customers)
+            )
+        )
         if not fleet.customers:
             continue
-        customer = random.choice(fleet.customers)
-        roll = random.random()
+        spawn(customer_event(engine, target, random.choice(fleet.customers)))
 
-        if roll < 0.08:
-            await send_trap(engine, target, AUTH_FAILURE_OID, customer)
-        elif roll < 0.14:
-            await send_trap(engine, target, CISCO_CPU_RISING_OID, customer)
-        elif roll < 0.19:
-            await send_trap(engine, target, CISCO_ENV_TEMP_OID, customer)
-        elif roll < 0.24:
-            await send_trap(engine, target, CISCO_CONFIG_MAN_OID, customer)
-        elif roll < 0.30:
-            await send_trap(engine, target, CISCO_OPTICAL_RX_POWER_OID, customer, interface=CUSTOMER_UPLINK_INTERFACE)
-        elif roll < 0.34:
-            await send_trap(engine, target, CISCO_ENV_FAN_OID, customer)
-        elif roll < 0.38:
-            await send_trap(engine, target, CISCO_ENV_SUPPLY_OID, customer)
-        elif roll < 0.43:
-            await send_trap(engine, target, CISCO_MEMORY_LOW_OID, customer)
-        elif roll < 0.85:
-            await send_trap(engine, target, LINK_DOWN_OID, customer, CUSTOMER_UPLINK_INTERFACE)
-            await asyncio.sleep(random.uniform(5, 30))
-            await send_trap(engine, target, LINK_UP_OID, customer, CUSTOMER_UPLINK_INTERFACE)
-        # else: quiet tick, nothing happens
+
+async def customer_event(engine, target, customer: dict) -> None:
+    roll = random.random()
+
+    if roll < 0.08:
+        await send_trap(engine, target, AUTH_FAILURE_OID, customer)
+    elif roll < 0.14:
+        await send_trap(engine, target, CISCO_CPU_RISING_OID, customer)
+    elif roll < 0.19:
+        await send_trap(engine, target, CISCO_ENV_TEMP_OID, customer)
+    elif roll < 0.24:
+        await send_trap(engine, target, CISCO_CONFIG_MAN_OID, customer)
+    elif roll < 0.30:
+        await send_trap(engine, target, CISCO_OPTICAL_RX_POWER_OID, customer, interface=CUSTOMER_UPLINK_INTERFACE)
+    elif roll < 0.34:
+        await send_trap(engine, target, CISCO_ENV_FAN_OID, customer)
+    elif roll < 0.38:
+        await send_trap(engine, target, CISCO_ENV_SUPPLY_OID, customer)
+    elif roll < 0.43:
+        await send_trap(engine, target, CISCO_MEMORY_LOW_OID, customer)
+    elif roll < 0.85:
+        await send_trap(engine, target, LINK_DOWN_OID, customer, CUSTOMER_UPLINK_INTERFACE)
+        await asyncio.sleep(random.uniform(5, 30))
+        await send_trap(engine, target, LINK_UP_OID, customer, CUSTOMER_UPLINK_INTERFACE)
+    # else: quiet tick, nothing happens
 
 
 async def boot_sequence(engine, target, routers: list[dict], delay: float = 0.05) -> None:
