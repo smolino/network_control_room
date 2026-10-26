@@ -9,4 +9,6 @@ backend/data/
 node_modules/
 dist/
 
+seed/
+
 .env

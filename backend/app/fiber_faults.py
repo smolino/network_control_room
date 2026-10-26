@@ -1,7 +1,7 @@
 """Fiber-segment fault generator for the "fiber cut -> downstream interface
 flap" root-cause correlation scenario (see app.correlation, app.bundles).
 
-Every 15-40s, this knocks out one interior span of fiber - strictly between
+Every FIBER_FAULT_INTERVAL_MIN/MAX_SECONDS (3-6 min by default), this knocks out one interior span of fiber - strictly between
 two adjacent repeaters on a BGP peering's physical SMF run (see
 BgpPeering.repeater_count) - for FAULT_DURATION_SECONDS, then heals it. Like
 app.snmp.trap_listener, this module is pure mediation now: it only decides
@@ -15,7 +15,7 @@ those alarms flow through the pipeline:
    (NOTIFY_ONLY, same as any other optical alarm) - this is the root cause.
 2. One member interface on each side's InterfaceBundle for that peering is
    flapped down, then back up - the resulting ISIS_NBR_DOWN incidents get
-   correlated (see app.correlation.try_link_root_cause) via the Neo4j
+   correlated (see app.incidents.service, app.correlation) via the Neo4j
    topology graph and marked symptomatic of the fiber cut instead of
    treated as independent problems, and never get their own auto-heal
    attempt.
@@ -30,17 +30,24 @@ import asyncio
 import logging
 import random
 
+from app.api.simulation import is_enabled as simulation_enabled
+from app.api.simulation import l1_rate
+from app.config import settings
 from app.db import SessionLocal
 from app.models import BgpPeering, BgpSessionStatus, InterfaceBundle
-from app.snmp.oid_map import FIBER_CUT_CLEAR_OID, FIBER_CUT_OID, IF_NAME_OID, ISIS_ADJACENCY_DOWN_OID, ISIS_ADJACENCY_UP_OID, ROUTER_ID_OID
+from app.snmp.oid_map import FIBER_CUT_CLEAR_OID, FIBER_CUT_OID, FIBER_SEGMENT_OID, IF_NAME_OID, ISIS_ADJACENCY_DOWN_OID, ISIS_ADJACENCY_UP_OID, ROUTER_ID_OID
 from app.streaming.producer import publish_raw_alarm
 from app.ws import manager
 
 logger = logging.getLogger(__name__)
 
-FAULT_DURATION_SECONDS = 10
-FAULT_INTERVAL_MIN_SECONDS = 15
-FAULT_INTERVAL_MAX_SECONDS = 40
+FAULT_DURATION_SECONDS = settings.fiber_fault_duration_seconds
+FAULT_INTERVAL_MIN_SECONDS = settings.fiber_fault_interval_min_seconds
+FAULT_INTERVAL_MAX_SECONDS = settings.fiber_fault_interval_max_seconds
+# How often the wait between faults re-reads the Settings > Simulation L1
+# slider, so a change applies within seconds rather than after the current
+# (possibly long) wait.
+RATE_POLL_SECONDS = 2.0
 
 # peering_id -> segment_index (1-based: the fault sits between the
 # segment_index-th and (segment_index+1)-th repeater along that peering's
@@ -50,13 +57,21 @@ FAULT_INTERVAL_MAX_SECONDS = 40
 active_faults: dict[int, int] = {}
 
 
-def _eligible_peering_ids_and_counts(db) -> list[tuple[int, int]]:
+def _eligible_peering_ids_and_counts(db) -> dict[str, list[tuple[int, int]]]:
+    """Faultable peerings grouped by their router_a's country, so the
+    caller can pick a country first - otherwise a region with many links
+    (e.g. a freshly bulk-uploaded country) would soak up nearly every
+    fault and the rest of the map would almost never see one."""
     peerings = (
         db.query(BgpPeering)
         .filter(BgpPeering.status == BgpSessionStatus.ESTABLISHED, BgpPeering.repeater_count >= 2)
         .all()
     )
-    return [(p.id, p.repeater_count) for p in peerings if p.id not in active_faults]
+    by_region: dict[str, list[tuple[int, int]]] = {}
+    for p in peerings:
+        if p.id not in active_faults:
+            by_region.setdefault(p.router_a.country or "", []).append((p.id, p.repeater_count))
+    return by_region
 
 
 def _bundle_for(db, peering_id: int, router_id: int) -> InterfaceBundle | None:
@@ -95,7 +110,7 @@ def _start_fault(db, peering_id: int, segment_index: int) -> None:
     publish_raw_alarm(
         source_ip=peering.router_a.mgmt_ip,
         trap_oid=FIBER_CUT_OID,
-        varbinds=[(ROUTER_ID_OID, peering.router_a.mgmt_ip)],
+        varbinds=[(ROUTER_ID_OID, peering.router_a.mgmt_ip), (FIBER_SEGMENT_OID, str(segment_index))],
         peering_id=peering.id,
     )
     _publish_member_events(db, peering_id, segment_index, ISIS_ADJACENCY_DOWN_OID)
@@ -142,12 +157,32 @@ async def _run_one_fault(peering_id: int, segment_index: int) -> None:
     )
 
 
+async def _rated_wait(seconds: float) -> None:
+    """Waits `seconds` of default-pace time, sped up or slowed down by the
+    L1 rate - re-read every RATE_POLL_SECONDS, so moving the slider takes
+    effect on the wait already in progress."""
+    remaining = seconds
+    while remaining > 0:
+        step = RATE_POLL_SECONDS
+        rate = l1_rate()
+        if rate > 0 and remaining / rate < step:
+            step = remaining / rate
+        await asyncio.sleep(step)
+        remaining -= step * rate
+
+
 async def fiber_fault_loop() -> None:
-    """Runs for the lifetime of the app: every 15-40s, knocks out one
+    """Runs for the lifetime of the app: every FAULT_INTERVAL_MIN/MAX_SECONDS, knocks out one
     interior span of fiber on a random established peering long enough to
-    have such a span, then heals it exactly FAULT_DURATION_SECONDS later."""
+    have such a span (random country first, then a random link in it), then
+    heals it exactly FAULT_DURATION_SECONDS later.
+    Only started when FIBER_FAULT_SIMULATION is on (see app.main), and
+    pauses with the Settings > Simulation toggle like the trap simulator.
+    The wait between faults is divided by the L1 rate slider (0 = none)."""
     while True:
-        await asyncio.sleep(random.uniform(FAULT_INTERVAL_MIN_SECONDS, FAULT_INTERVAL_MAX_SECONDS))
+        await _rated_wait(random.uniform(FAULT_INTERVAL_MIN_SECONDS, FAULT_INTERVAL_MAX_SECONDS))
+        if not simulation_enabled():
+            continue
         db = SessionLocal()
         try:
             candidates = _eligible_peering_ids_and_counts(db)
@@ -155,6 +190,6 @@ async def fiber_fault_loop() -> None:
             db.close()
         if not candidates:
             continue
-        peering_id, repeater_count = random.choice(candidates)
+        peering_id, repeater_count = random.choice(candidates[random.choice(list(candidates))])
         segment_index = random.randint(1, repeater_count - 1)
         asyncio.create_task(_run_one_fault(peering_id, segment_index))

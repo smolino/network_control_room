@@ -16,6 +16,15 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-ncrpassword}
+      # Auth (see app/auth.py and "Users and roles" in the README). Set
+      # AUTH_SECRET so sessions survive a restart; SERVICE_API_TOKEN is what
+      # the simulator/import-fleet.py authenticate the fleet seed with.
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      SERVICE_API_TOKEN: ${SERVICE_API_TOKEN:-}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-adminadmin}
+      # Public URL of the UI, for the incident link in team notification
+      # emails - no link when unset.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
     volumes:
       - backend-data:/app/data
     depends_on:
@@ -104,6 +113,10 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-ncrpassword}
+      # Incident workflow timing - the sweeper runs here (see
+      # app/incidents/service.py).
+      INCIDENT_SETTLE_SECONDS: ${INCIDENT_SETTLE_SECONDS:-20}
+      INCIDENT_MONITORING_TIMEOUT_SECONDS: ${INCIDENT_MONITORING_TIMEOUT_SECONDS:-600}
     depends_on:
       kafka:
         condition: service_healthy
@@ -132,54 +145,15 @@ services:
       timeout: 5s
       retries: 20
 
-  simulator:
-    build: ./simulator
-    depends_on:
-      backend:
-        condition: service_healthy
-    environment:
-      BACKEND_API_URL: http://backend:8000
-      TRAP_HOST: backend
-      TRAP_PORT: 1162
-      TRAP_COMMUNITY: public
-      FLAPPING_ROUTER_COUNT: 5
-      DOWN_ROUTER_COUNT: 3
-      FLAPPING_BUNDLE_COUNT: 3
-      TICK_MIN_SECONDS: 3
-      TICK_MAX_SECONDS: 8
-      BGP_INCIDENT_INTERVAL_SECONDS: 600
-      BUNDLE_FAILURE_INTERVAL_SECONDS: 900
-
   frontend:
     build: ./frontend
     ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      # Set DISABLE_SSL=true in .env for local dev - no Let's Encrypt
-      # certificate available, so nginx serves plain HTTP instead.
-      DISABLE_SSL: ${DISABLE_SSL:-false}
-    volumes:
-      - certbot-conf:/etc/letsencrypt:ro
-      - certbot-www:/var/www/certbot
+      # Plain HTTP only - TLS is terminated by an external nginx (not part
+      # of this project). In production set HTTP_PORT=127.0.0.1:8080 in .env
+      # and proxy to it from that nginx.
+      - "${HTTP_PORT:-80}:80"
     depends_on:
       - backend
-
-  # Requests and renews the Let's Encrypt certificate used by `frontend`.
-  # Run `scripts/init-letsencrypt.sh` once to obtain the first certificate
-  # (see "HTTPS / Let's Encrypt" in the README) — this service then just
-  # keeps it renewed for as long as the stack stays up.
-  certbot:
-    image: certbot/certbot:latest
-    volumes:
-      - certbot-conf:/etc/letsencrypt
-      - certbot-www:/var/www/certbot
-    entrypoint: >
-      /bin/sh -c "trap exit TERM;
-      while :; do
-        certbot renew --webroot -w /var/www/certbot --quiet;
-        sleep 12h & wait $${!};
-      done"
 
   # --- Optional: MySQL instead of the default Postgres+PostGIS ---
   # 1. Uncomment this service.
@@ -200,8 +174,6 @@ services:
 
 volumes:
   backend-data:
-  certbot-conf:
-  certbot-www:
   postgres-data:
   neo4j-data:
   # mysql-data:

@@ -1,10 +1,18 @@
 """Topology-based root-cause correlation.
 
 An open L1 (physical/optical) incident on a BGP peering's fiber run
-outranks any L3 (control-plane/interface) incident that opens on either
-endpoint of that same peering shortly after - the fiber-cut-causes-
-downstream-flaps scenario this module exists to recognize. See
-app.fiber_faults for the only current source of real L1 incidents.
+outranks any L3 (control-plane/interface) incident on either endpoint of
+that same peering within CORRELATION_WINDOW_SECONDS of it - the
+fiber-cut-causes-downstream-flaps scenario this module exists to
+recognize. See app.fiber_faults for the only current source of real L1
+incidents.
+
+Correlation runs in both directions, since alarms don't always arrive in
+causal order: an L3 incident opening looks for an L1 root that's already
+open (find_open_l1_root_cause), and an L1 incident opening looks back for
+L3 symptoms that beat it there (find_l3_symptoms). The actual linking (and
+the stage change that goes with it) is app.incidents.service's job - this
+module only answers the lookups.
 
 The topology traversal (which peering a router/interface's fiber path
 belongs to) is delegated to app.topology_graph, backed by Neo4j - this
@@ -14,16 +22,20 @@ actually an open incident on that peering right now), never the graph.
 
 from datetime import datetime, timedelta
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app import topology_graph
-from app.models import AlarmLayer, Incident, IncidentStatus
+from app.models import AlarmLayer, Incident, IncidentStage, IncidentStatus
 
-# How long after an L1 incident opens an L3 incident on the same peering is
-# still considered one of its symptoms, rather than an independent problem.
-# Tuned to the propagation delay of consequential alarms in this simulated
-# topology, not a real fiber network's.
+# How far apart an L1 incident and an L3 incident on the same peering can
+# open and still be considered cause and symptom, rather than independent
+# problems. Tuned to the propagation delay of consequential alarms in this
+# simulated topology, not a real fiber network's.
 CORRELATION_WINDOW_SECONDS = 60
+
+# A human already owns these - correlation doesn't take them away.
+_HUMAN_OWNED_STAGES = (IncidentStage.ACKNOWLEDGED, IncidentStage.DISPATCHED)
 
 
 def find_open_l1_root_cause(db: Session, router_id: int, interface_name: str | None, now: datetime) -> Incident | None:
@@ -59,13 +71,38 @@ def find_open_l1_root_cause(db: Session, router_id: int, interface_name: str | N
     )
 
 
-def try_link_root_cause(db: Session, incident: Incident, now: datetime) -> None:
-    """Links `incident` to an open L1 root cause on the same peering, if
-    any - no-op for L1 incidents themselves or ones already linked."""
-    if incident.layer != AlarmLayer.L3 or incident.root_cause_incident_id is not None:
-        return
+def find_l3_symptoms(db: Session, root: Incident, now: datetime) -> list[Incident]:
+    """Open, not-yet-linked L3 incidents that opened within the correlation
+    window before `root` (a just-opened, peering-scoped L1 incident) on an
+    interface its fiber span carries - or with no interface at all on one
+    of those routers, mirroring find_open_l1_root_cause's fallback."""
+    if root.peering_id is None:
+        return []
+    names_by_router: dict[int, list[str]] = {}
+    for router_id, name in topology_graph.interfaces_for_peering(root.peering_id):
+        names_by_router.setdefault(router_id, []).append(name)
+    if not names_by_router:
+        return []
 
-    root_cause = find_open_l1_root_cause(db, incident.router_id, incident.interface_name, now)
-    if root_cause is not None:
-        incident.root_cause_incident_id = root_cause.id
-        db.flush()
+    window_start = now - timedelta(seconds=CORRELATION_WINDOW_SECONDS)
+    return (
+        db.query(Incident)
+        .filter(
+            or_(
+                *(
+                    and_(
+                        Incident.router_id == router_id,
+                        or_(Incident.interface_name.in_(names), Incident.interface_name.is_(None)),
+                    )
+                    for router_id, names in names_by_router.items()
+                )
+            ),
+            Incident.id != root.id,
+            Incident.layer == AlarmLayer.L3,
+            Incident.status == IncidentStatus.OPEN,
+            Incident.root_cause_incident_id.is_(None),
+            Incident.opened_at >= window_start,
+            or_(Incident.stage.is_(None), Incident.stage.notin_(_HUMAN_OWNED_STAGES)),
+        )
+        .all()
+    )

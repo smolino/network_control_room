@@ -1,0 +1,46 @@
+# Dev-only overlay: adds the trap simulator on top of docker-compose.yml.
+# The base file is what runs in production (real routers send traps to
+# `backend`); the simulator stands in for the 4400-router fleet and should
+# never run there. Start the dev stack with:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# or set COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml in .env so a
+# plain `docker compose up` picks up both files.
+services:
+  # Turn on the backend's synthetic fiber-cut generator (app/fiber_faults.py)
+  # - off in production, where only real traps should open incidents.
+  backend:
+    environment:
+      FIBER_FAULT_SIMULATION: "true"
+      FIBER_FAULT_INTERVAL_MIN_SECONDS: 180
+      FIBER_FAULT_INTERVAL_MAX_SECONDS: 360
+      FIBER_FAULT_DURATION_SECONDS: 60
+
+  simulator:
+    build: ./simulator
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      BACKEND_API_URL: http://backend:8000
+      # Fails fast instead of crash-looping on 401s from the fleet seed.
+      SERVICE_API_TOKEN: ${SERVICE_API_TOKEN:?set SERVICE_API_TOKEN in .env - see .env.example}
+      TRAP_HOST: backend
+      TRAP_PORT: 1162
+      TRAP_COMMUNITY: public
+      FLAPPING_ROUTER_COUNT: 2
+      DOWN_ROUTER_COUNT: 1
+      FLAPPING_BUNDLE_COUNT: 1
+      FLAP_QUIET_MIN_SECONDS: 300
+      FLAP_QUIET_MAX_SECONDS: 600
+      TICK_MIN_SECONDS: 20
+      TICK_MAX_SECONDS: 40
+      CUSTOMER_TICK_MIN_SECONDS: 60
+      CUSTOMER_TICK_MAX_SECONDS: 120
+      # Scale the random event streams with fleet size - average seconds
+      # between random events for any one primary/customer (0 = off).
+      PRIMARY_EVENT_INTERVAL_SECONDS: ${PRIMARY_EVENT_INTERVAL_SECONDS:-7200}
+      CUSTOMER_EVENT_INTERVAL_SECONDS: ${CUSTOMER_EVENT_INTERVAL_SECONDS:-172800}
+      BGP_INCIDENT_INTERVAL_SECONDS: 600
+      BUNDLE_FAILURE_INTERVAL_SECONDS: 900

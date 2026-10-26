@@ -104,7 +104,11 @@ incident type; topology graph → root cause; incident type → playbook).
   continuously sends real SNMP traps: boot-time `coldStart`s, a rich
   event mix on primaries (link flaps, BGP/CPU/temperature/config/auth
   events), and a much quieter trickle of occasional link blips on
-  customer routers.
+  customer routers. After seeding, it simulates the backend's *actual*
+  fleet (`GET /api/routers` + `/api/bgp/peerings`, re-read every
+  `FLEET_REFRESH_SECONDS`), so routers and links added from Add Fleet or a
+  bulk upload get the same event mix, using the bundle/interface names the
+  backend stored for them.
 - **frontend/** — React + Vite app with a Leaflet world map on an
   OpenStreetMap basemap (routers colored by status: green=up, red=down,
   yellow=flapping — see [Color reference](#color-reference); primaries
@@ -116,12 +120,45 @@ incident type; topology graph → root cause; incident type → playbook).
 
 ## Running it
 
+First copy `.env.example` to `.env` and fill in `AUTH_SECRET` and
+`SERVICE_API_TOKEN` (see "Users and roles" below) - the dev overlay refuses
+to start without the latter.
+
+Local dev (includes the trap simulator, which seeds and drives the fake
+router fleet):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+Or set `COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml` in `.env`
+(see `.env.example`) so a plain `docker compose up --build` includes it.
+
+Production uses `docker-compose.yml` on its own - no simulator, so routers
+and traps have to come from the real network:
+
 ```bash
 docker compose up --build
 ```
 
+To load the full 4400-router fleet (400 primaries + 4000 customers) and 600
+BGP links, import `seed/routers.csv` and
+`seed/bgp_links.csv` once the stack is up:
+
+```bash
+export SERVICE_API_TOKEN=...                                 # same value the backend runs with
+./scripts/import-fleet.py                                    # against http://localhost:8000
+./scripts/import-fleet.py https://controlroom.point2point.org.uk
+```
+
+The files use the Add Fleet bulk-upload CSV format, so you can also upload
+them from the UI (Add Fleet → Bulk upload: routers first, then links). The
+script is idempotent and posts in 500-row chunks.
+
 Then open:
-- **http://localhost** — the web UI (map, dashboard, routers, incidents)
+- **http://localhost** — the web UI (map, dashboard, routers, incidents);
+  sign in as `admin` / `adminadmin` (or `ADMIN_INITIAL_PASSWORD`) and change
+  that password under Settings → Security
 - **http://localhost:8000/docs** — the backend's interactive API docs
 - **http://localhost:7474** — the Neo4j browser, useful for poking at the
   topology graph directly (e.g. `MATCH (s:FiberSpan) RETURN count(s)`);
@@ -131,7 +168,7 @@ Then open:
 `backend` now waits on `kafka`, `neo4j`, and `postgres` all being healthy
 before it starts, so first boot takes a bit longer than before — Kafka
 and Neo4j both need a few seconds to finish their own internal startup.
-It takes a few seconds after that for the simulator to seed the 4400
+In dev, it takes a few seconds after that for the simulator to seed the 4400
 routers (400 primaries + 4000 customers) and start sending traps — the
 map fills in and incidents start appearing shortly after
 `docker compose up` finishes. If you ever see `backend` (or
@@ -167,14 +204,8 @@ A few things differ from the compose setup:
   `k8s/02-configmap.yaml` — both use the same default values as
   `docker-compose.yml`/`.env.example`, so change them there before applying
   outside a throwaway/demo cluster.
-- **Frontend TLS**: the `frontend` image's baked-in nginx config is HTTPS-
-  only and hardcoded to `controlroom.point2point.org.uk` with Let's Encrypt
-  certs from the `certbot` compose service, neither of which exists
-  in-cluster. `k8s/10-frontend.yaml` mounts a ConfigMap that overrides
-  `/etc/nginx/conf.d/default.conf` at runtime with a plain-HTTP config
-  (same `/api`, `/ws` proxy routes) instead of building a separate k8s-only
-  image — add TLS back later via an Ingress + cert-manager without touching
-  the image.
+- **TLS** isn't handled here either: the `frontend` image serves plain
+  HTTP only — add it via an Ingress + cert-manager or an external proxy.
 - **Access**: `frontend`'s Service is `NodePort` (`kubectl get svc -n ncr
   frontend` to see which port); there's no Ingress in these manifests.
 
@@ -188,11 +219,13 @@ everything defaults to `L3` except the genuinely physical-layer types:
 | Trap | Incident type | Layer |
 |---|---|---|
 | `linkDown` | `LINK_DOWN` (or `LINK_FLAP` if the interface has flapped ≥4 times in the last 10 minutes) | L3 |
-| `linkUp` | `LINK_UP` (resolves any open `LINK_DOWN`/`LINK_FLAP` on that interface) | L3 |
-| `coldStart` / `warmStart` | `COLD_START` / `WARM_START` | L3 |
+| `linkUp` | alarm only — resolves any open `LINK_DOWN`/`LINK_FLAP` on that interface | L3 |
+| `coldStart` / `warmStart` | alarm only — marks the router up | L3 |
 | `authenticationFailure` | `AUTH_FAILURE` | L3 |
-| BGP established/backward-transition | `BGP_STATE_CHANGE` | L3 |
-| IS-IS adjacency down/up (on a bundle member) | `ISIS_NBR_DOWN` / `ISIS_NBR_UP` | L3 |
+| BGP backward-transition | `BGP_STATE_CHANGE` | L3 |
+| BGP established | alarm only — resolves the open `BGP_STATE_CHANGE` on that interface | L3 |
+| IS-IS adjacency down (on a bundle member) | `ISIS_NBR_DOWN` | L3 |
+| IS-IS adjacency up | alarm only — resolves the open `ISIS_NBR_DOWN` on that member | L3 |
 | BFD session down | `BFD_SESSION_DOWN` | L3 |
 | Cisco CPU threshold | `HIGH_CPU` | L3 |
 | Cisco memory-pool-low | `HIGH_MEMORY` | L3 |
@@ -200,7 +233,12 @@ everything defaults to `L3` except the genuinely physical-layer types:
 | Cisco environment/temperature | `ENV_ALARM` | L3 |
 | Cisco fan / redundant-supply failure | `FAN_FAILURE` / `PSU_FAILURE` | **L1** |
 | Cisco optical Rx-power threshold, or the fiber-fault generator's `opticalLossOfSignal`/`opticalSignalRestored` (`FIBER_CUT_OID`/`FIBER_CUT_CLEAR_OID`, synthetic — see below) | `OPTICAL_ALARM` | **L1** |
-| anything else | `UNKNOWN` | L3 |
+| anything else | alarm only | L3 |
+
+"Alarm only" traps are stored as `TrapEvent` rows (each router's trap
+history) but never become incidents — the incident table only holds
+problems someone or something has to deal with. See "Incident workflow"
+below.
 
 Flap detection (`backend/app/snmp/flapping.py`) keeps a rolling window
 per `(router, interface)`; once enough linkUp/linkDown transitions occur
@@ -287,36 +325,45 @@ caused it — this is what turns a fiber cut into a single visible root
 cause instead of a wall of unrelated-looking router alarms.
 
 **The fiber-cut scenario** (`backend/app/fiber_faults.py`) is the
-concrete, always-running demonstration: every 15–40s it picks an
+concrete, always-running demonstration: every 3–6 minutes (configurable) it picks an
 established BGP peering with at least 2 SMF repeaters and knocks out one
-interior span for 10 seconds. Unlike the map-only "faulty segment"
+interior span for 60 seconds. Unlike the map-only "faulty segment"
 overlay this started as, it now raises a *real* chain of events through
 the pipeline above:
 
 1. An `OPTICAL_ALARM` incident opens, tied to the peering via
    `Incident.peering_id` (not a router — a fiber cut isn't any one
-   router's problem). It goes through the normal auto-heal pipeline like
-   any other real optical alarm (`NOTIFY_ONLY` — a fiber cut can't be
-   fixed by a config push).
+   router's problem). After the settle window it goes through the normal
+   auto-heal pipeline like any other real optical alarm (`NOTIFY_ONLY` — a
+   fiber cut can't be fixed by a config push) and lands in triage.
 2. One bundle member interface on **each side** of that peering loses IS-
    IS adjacency (`ISIS_NBR_DOWN`) — a real, partial degradation, not the
    whole bundle, since real fiber typically carries one wavelength/member
    per physical strand.
-3. `app/correlation.py:try_link_root_cause` runs for each of those two new
-   `ISIS_NBR_DOWN` incidents: it asks Neo4j which peering(s) that specific
-   interface's fiber path is `SUPPORTED_BY`, then checks Postgres for an
-   open L1 incident on that peering within the last 60s
-   (`CORRELATION_WINDOW_SECONDS`). Finding the `OPTICAL_ALARM` from step
-   1, it sets `root_cause_incident_id` — marking both as **symptomatic**.
-4. Symptomatic incidents **never get their own auto-heal attempt**
-   (`classifier.py` skips `maybe_remediate` whenever
-   `root_cause_incident_id` is set) — bouncing a downstream interface
-   wouldn't fix an upstream fiber cut, and it avoids a redundant config
-   backup for every member a single fault happens to touch.
-5. After 10s, the reverse sequence resolves everything: both members'
-   `ISIS_NBR_UP`, then the `OPTICAL_ALARM` itself (via a synthetic
-   `FIBER_CUT_CLEAR_OID` event, resolved by peering rather than by
-   router+interface — see `flapping.py:resolve_incident_for_peering`).
+3. Correlation runs **in both directions**, since alarms don't always
+   arrive in causal order (`app/correlation.py`, applied by
+   `app/incidents/service.py` whenever an incident opens):
+   - a new L3 incident asks Neo4j which peering(s) that specific
+     interface's fiber path is `SUPPORTED_BY`, then checks Postgres for an
+     open L1 incident on that peering within the last 60s
+     (`CORRELATION_WINDOW_SECONDS`);
+   - a new peering-scoped L1 incident asks Neo4j for every interface its
+     span carries, and claims any open L3 incident on them that opened in
+     the last 60s.
+   Either way the L3 incident gets `root_cause_incident_id` and stage
+   `suppressed` — it's a **symptom**.
+4. Symptoms **never get their own auto-heal attempt** — bouncing a
+   downstream interface wouldn't fix an upstream fiber cut, and it avoids
+   a redundant config backup for every member a single fault happens to
+   touch. Auto-heal waits out a short settle window (see "Incident
+   workflow") precisely so a late L1 alarm still gets to claim them first.
+5. When the cut heals, both members' IS-IS adjacency-up traps resolve the
+   symptoms, then the `OPTICAL_ALARM` itself resolves (via a synthetic
+   `FIBER_CUT_CLEAR_OID` event, by peering rather than by
+   router+interface). A symptom still open at that point is **released**:
+   unlinked and sent back to `new`, so if it's still down a settle window
+   later it's handled as a problem of its own. Resolving a root by hand
+   instead resolves its symptoms along with it.
 
 **In the UI:**
 - **Map** — an "L1 physical" / "L3 logical" layer toggle shows/hides the
@@ -326,7 +373,7 @@ the pipeline above:
   the same blink timer as `needs_attention`), and the two routers on
   either end get a dashed amber ring (`#fb923c`) distinct from the solid
   orange `needs_attention` ring — "symptomatic of an upstream fault," not
-  "this router's own remediation failed."
+  "this router has an incident nobody has picked up."
 - **Incidents tab** — a Layer column, an "All/L1/L3" filter, and a "Hide
   symptomatic" checkbox (checked by default) that filters out anything
   with `root_cause_incident_id` set — matching the doc this app follows:
@@ -347,11 +394,106 @@ interface) — a real deployment would need the fuller topology
 that the design doc this app follows calls out as the hardest, most-
 often-underinvested-in part of a real system.
 
+## Fiber fault location (which repeater to replace)
+
+A fiber-cut alarm (`FIBER_CUT_OID`) carries the faulty span of the run in
+the `FIBER_SEGMENT_OID` varbind (`1.3.6.1.4.1.9.9.9999.4.3`), the way a
+repeater supervisory system reports which span lost signal. The incident
+stores it (`Incident.fault_segment_index`) and `backend/app/fault_location.py`
+turns it into something a field crew can act on:
+
+- Repeaters on a link are named **R1..Rn from `router_a`**, evenly spaced
+  along the run, the same positions as the repeater dots on the map. Span
+  *k* runs from Rk to R(k+1), so span 0 and span n touch a router.
+- For each fiber-cut incident the API returns `fault_location`: the two
+  points bounding the span (repeater label, km from `router_a`,
+  coordinates), the span length, and `repeaters_to_check`.
+
+The UI shows it in four places:
+- **Incident list:** a "📍 Faulty span R3 → R4 (km …)" line with **Locate
+  on map**, which zooms to the span and labels both repeaters. It works
+  for resolved incidents too, for after-the-fact repairs.
+- **Map:** hover any repeater dot to see its R-number and km mark, or the
+  pulsing fault segment to see its span.
+- **Human Review:** the dispatch text names the span, both repeaters'
+  km marks and coordinates, and the inspect/replace/OTDR steps.
+- **Incident description:** stored with the span, so emails and exports
+  carry it too.
+
+Loss of signal is reported by the first repeater after the break, so the
+fault is narrowed to one span, not one repeater. Both repeaters bounding
+it are listed for inspection, and the fiber of the span itself is the
+third suspect.
+
+New nullable columns like `fault_segment_index` are added to an existing
+database automatically at startup (`add_missing_columns` in `app/db.py`),
+since the project has no migration tool.
+
+## Customer impact (blast radius)
+
+Every open, service-affecting incident (link down/flap, BGP, BFD, IS-IS,
+optical, PSU) carries an `impact` - which customers it puts at risk right
+now, computed by `backend/app/impact.py` from the two-tier topology:
+
+- **Scope** — an incident on a primary covers that primary's ~10
+  single-homed customers; a peering-scoped L1 fiber incident covers both
+  endpoint primaries' customers; an incident on a customer router covers
+  just that customer.
+- **Level** — a customer in scope is **down** when its primary is cut off
+  from the backbone (the router itself is DOWN, or it has dropped out of
+  the BGP mesh's largest connected component) or the CPE itself is DOWN.
+  Any down customer makes the incident an **outage**; otherwise it's
+  **degraded** (still reachable, reduced redundancy). "Down" is about the
+  customer's current state, not about which incident caused it - a fiber
+  cut whose endpoint primary is DOWN for an unrelated reason still reports
+  those customers as down, since they are.
+
+It's computed on read from live router/BGP state rather than stored, so it
+tracks the network as it changes and needs no schema migration. Resolved
+incidents and control/management events (CPU, auth, config change, ...)
+have none.
+
+In the UI: an **Impact** column on both incident tabs with a "Sort:
+customer impact" option, **Show on map** (rings every router in the blast
+radius and zooms to it, via `GET /api/incidents/{id}/impact`), and
+"customers impacted / down" totals on the top bar and Dashboard (deduped
+across incidents, from `/api/stats/summary`).
+
+## Users and roles
+
+Accounts live in Postgres (`users` table), not the browser. Passwords are
+PBKDF2-hashed, two-factor auth (TOTP) is verified server-side, and
+`POST /api/auth/login` returns a signed bearer token (HMAC with
+`AUTH_SECRET`, `AUTH_TOKEN_TTL_HOURS` lifetime) that every API call and the
+`/ws/events` WebSocket (`?token=`) must present. See `backend/app/auth.py`.
+
+| Role | Can |
+|---|---|
+| `viewer` | See everything: map, dashboard, routers, incidents, Human Review analysis |
+| `operator` | + acknowledge, dispatch (send to SOC/maintenance) and resolve incidents on the Human Review board |
+| `admin` | + Add Fleet / remove routers / create BGP links, router models, teams, pause/resume simulation, "Reset all open incidents" (Settings → Simulation), manage users and roles |
+
+Checks are enforced on the backend (`require_role` in `app/auth.py`); the
+UI only hides what a role can't use. Each request re-reads the user, so a
+role change or deletion applies immediately, and resetting someone's
+password or OTP signs them out everywhere. The last admin can't be demoted
+or deleted.
+
+On first start (empty `users` table) an `admin` account is created with
+`ADMIN_INITIAL_PASSWORD` (default `adminadmin`) - change it right away.
+Users and OTP secrets from the old browser-only login aren't migrated;
+recreate them under Settings → Users.
+
+Non-human callers - the simulator's startup seed and
+`scripts/import-fleet.py` - send `Authorization: Bearer $SERVICE_API_TOKEN`,
+which counts as admin. `GET /api/simulation/status` and `/api/health` are
+the only unauthenticated endpoints.
+
 ## Auto-heal
 
-`backend/app/remediation/engine.py` runs a rule-based playbook the first
-time an actionable incident opens (repeat traps against an already-open
-incident don't re-trigger it):
+`backend/app/remediation/engine.py` runs a rule-based playbook once per
+incident, after its settle window (see "Incident workflow" below — repeat
+traps against an already-open incident don't re-trigger it):
 
 1. **Always back up first** (`backup_router_config`) — snapshots the
    router's running-config *before* anything else happens, so any change
@@ -374,11 +516,10 @@ incident don't re-trigger it):
    | `FAN_FAILURE` / `PSU_FAILURE` | `NOTIFY_ONLY` (skipped) | chassis hardware failure — NOC/dispatch notified |
    | `HIGH_MEMORY` | `NOTIFY_ONLY` (skipped) | memory-pool exhaustion — flagged for human review rather than an automated process restart |
 
-   `LINK_UP`, `COLD_START`/`WARM_START`, `ISIS_NBR_UP`, and `UNKNOWN` are
-   "good news" or uninterpretable events and never enter the auto-heal
-   pipeline at all. Whatever the type, an incident that's been linked as
+   Ups, boots and unrecognized traps are alarms, not incidents, so they
+   never get here. Whatever the type, an incident that's been linked as
    **symptomatic** of an open L1 root cause (see "L1/L3 layering" above)
-   also skips auto-heal entirely, even if its type would otherwise be
+   skips auto-heal entirely, even if its type would otherwise be
    actionable.
 
 Every backup and every action (success, failure, or skip, with a log) is
@@ -395,35 +536,79 @@ replace `_simulated_config_snapshot` and the action execution in
 `engine.py` with actual SSH/NETCONF/RESTCONF calls against the device,
 while keeping the same backup-then-act-then-record flow.
 
-**Manual resolution.** Every `NOTIFY_ONLY` incident type in the table
-above stays **open** - nothing auto-remediates them, so they sit there
-until a human closes them (or, for `ISIS_NBR_DOWN`/`OPTICAL_ALARM`
-specifically, until the matching "up"/"cleared" event resolves it - see
-"L1/L3 layering" above). The Incidents tab's
-"⚠ Needs manual review" filter pulls up exactly these; every open
-incident has a "Resolve" link, and a "Resolve N open (shown)" button
-above the table bulk-resolves whatever's currently open in the filtered
-view (with a confirmation prompt). Resolving sets `resolved_manually`
-so the UI can distinguish "a human closed this" from "a linkUp/
-bgpEstablished trap closed this" - both look identical otherwise
-(`status: resolved`). Backed by `POST /api/incidents/{id}/resolve` and
-`POST /api/incidents/resolve` (`{"incident_ids": [...]}`), both broadcast
-over the WebSocket so every connected tab updates immediately, not just
-the one that clicked.
+## Incident workflow
 
-**When auto-heal doesn't fix it, the map tells you.** If a remediation
-action comes back `failed` and the incident is still open, that router
-is "needs attention" (`RouterOut.needs_attention`,
-`app/remediation/engine.py:needs_attention_router_ids`) and its marker
-blinks on the map — alternating between a bright orange ring at full
-size/opacity and a dim, smaller one, about twice a second — with a
-"⚠ auto-heal failed — needs attention" line in its popup. This needs no
-separate "resolved" bookkeeping: `needs_attention` is recomputed fresh on
-every trap from current DB state (does this router have an *open*
-incident whose remediation failed?), so the instant the router actually
-recovers (a real `linkUp` resolves the incident, independent of whether
-the earlier auto-heal attempt succeeded) it drops out of the query and
-the blink stops on its own.
+Every incident moves through one lifecycle, owned by a single module —
+`backend/app/incidents/service.py` is the only code that changes incident
+state, and every change it makes goes out as one WebSocket event carrying
+the changed incidents in full (the same shape as the REST API).
+
+```
+ trap ─▶ alarm only (TrapEvent): ups, boots, unknown traps
+     └▶ NEW ── settle window ──▶ auto-heal (backup + playbook)
+         │                         ├─ fixed, type has a clear trap ─▶ MONITORING ─ clear trap ─▶ RESOLVED
+         │                         │                                    └─ timeout ─▶ TRIAGE
+         │                         ├─ fixed, no clear trap ─────────▶ RESOLVED (auto_healed)
+         │                         └─ failed / notify-only ─────────▶ TRIAGE
+         └▶ SUPPRESSED (symptom of an open L1 root cause)
+ TRIAGE ─ acknowledge ─▶ ACKNOWLEDGED ─ send to team ─▶ DISPATCHED ─ resolve (reason) ─▶ RESOLVED
+```
+
+- **Settle window** (`INCIDENT_SETTLE_SECONDS`, default 20s): auto-heal
+  doesn't fire the instant an incident opens. That gives a late L1 alarm
+  time to claim its symptoms, and a link that recovers by itself within
+  the window is never bounced or backed up at all. `LINK_FLAP` skips it —
+  flap detection already needed several transitions to fire.
+- **Fixes are confirmed, not assumed.** For types the device reports
+  clearing (`linkUp`, `bgpEstablished`, IS-IS adjacency up, optical signal
+  restored), a successful fix waits in `monitoring` for that clear trap;
+  if it doesn't come within `INCIDENT_MONITORING_TIMEOUT_SECONDS` (default
+  10 min) the incident goes to triage. A failed fix always goes to triage —
+  including `HIGH_CPU`/`BGP_STATE_CHANGE`, which used to be logged as
+  already resolved, so a failed fix for them was never shown to anyone.
+- **A clear trap resolves an incident from any stage**
+  (`resolution_reason: auto_cleared`), including ones a human is already
+  working on.
+- The **sweeper** that drives the settle window and the monitoring timeout
+  runs inside the `correlator` between Kafka polls (`service.sweep`), so
+  incident writes from the pipeline still come from one process.
+
+**Human Review** is a board with one column per stage a person acts on —
+**Triage** (nobody has it yet), **Acknowledged** (an operator owns it),
+**Dispatched** (handed to a SOC/maintenance team) — sorted by **priority**
+(`P1`–`P4`, from trap severity, L1 vs L3, primary vs customer router, and
+current customer impact; recomputed on every stage change). It's served by
+`GET /api/incidents/queue` and kept live over the WebSocket. Clicking a
+card opens its analysis, suggested fix and actions:
+
+- **Acknowledge** (`POST /api/incidents/{id}/ack`) — you own it.
+- **Send & dispatch** (`POST /api/incidents/{id}/notify`) — emails the
+  chosen team and moves it to `dispatched` (unless the send failed). With
+  `PUBLIC_BASE_URL` set, the email links back to the incident
+  (`/?incident=<id>` opens it on the board).
+- **Resolve** (`POST /api/incidents/{id}/resolve`, `{"reason", "note"}`) —
+  a reason is required (`fixed`, `false_positive`, `maintenance`,
+  `duplicate`); the resolver's username, reason and note are kept on the
+  incident. Resolving a root cause resolves its symptoms too, and a
+  symptom can't be resolved on its own. "Resolve all in Triage" uses
+  `POST /api/incidents/resolve`, which likewise only takes root incidents.
+
+The **Incidents** tabs are a read-only history: stage and priority
+columns, filters by stage/type/layer, and how each resolved incident was
+closed. The admin-only "Reset all open incidents" lives in Settings →
+Simulation.
+
+**The map flags anything nobody has picked up.** A router with an open
+incident in `triage` is "needs attention" (`RouterOut.needs_attention`,
+`service.needs_attention_router_ids`): its marker blinks — alternating
+between a bright orange ring at full size/opacity and a dim, smaller one,
+about twice a second — with a "⚠ incident in triage — needs attention"
+line in its popup. It stops once the incident is acknowledged, dispatched
+or resolved. The top bar shows the fleet-wide triage count.
+
+Databases created before this workflow existed are upgraded at startup:
+the new columns are added by `add_missing_columns`, and
+`service.backfill_stages` gives existing incidents a stage.
 
 ## Two-tier topology: primaries, customers, and BGP
 
@@ -538,7 +723,7 @@ the blink stops on its own.
   soft reset can't fix a transport that's actually gone. The simulator
   demonstrates three distinct IS-IS link-failure scenarios:
   `random_event_loop` flips one random member per peer as one-off routine
-  noise across the whole mesh; `FLAPPING_BUNDLE_COUNT` (default 3) specific
+  noise across the whole mesh; `FLAPPING_BUNDLE_COUNT` (default 1) specific
   bundles get a chronically-flapping member instead
   (`bundle_flap_loop`, same burst/quiet cadence as the router-level
   `flap_loop`) - a persistently-demoable "degraded but redundant" bundle;
@@ -614,40 +799,15 @@ wrong.
 | Dashboard bar-chart fill | gradient `#60a5fa` → `#818cf8` |
 | Destructive action ("Reset ALL open incidents") | `#7c2d12` fill / `#9a3412` border |
 
-## HTTPS / Let's Encrypt
+## HTTPS / reverse proxy
 
-`frontend/nginx.conf` serves the app over HTTPS on port 443 (redirecting
-plain HTTP to it) using a Let's Encrypt certificate for
-`controlroom.point2point.org.uk`. This needs two things before it'll work:
-
-1. A DNS **A record** for that domain pointing at the server's public IP.
-2. Ports **80** and **443** reachable from the internet (Let's Encrypt's
-   HTTP-01 challenge, which `scripts/init-letsencrypt.sh` uses, connects to
-   port 80).
-
-To get the first certificate, run once from the repo root, **before** (or
-instead of) `docker compose up`:
-
-```bash
-./scripts/init-letsencrypt.sh
-```
-
-This brings up `backend` + `frontend` itself (nginx has to be running to
-answer the ACME challenge), so nothing else needs to be started first. It's
-also safe to re-run — if a real certificate already exists it just makes
-sure the stack is up and exits. Set `STAGING=1` (in `.env` or the
-environment) to use Let's Encrypt's staging server while testing, which has
-no rate limits but issues untrusted certs.
-
-Domain and contact email come from `DOMAIN` / `LETSENCRYPT_EMAIL` in `.env`
-(see `.env.example`); changing the domain also means updating the two
-`server_name`/`ssl_certificate*` lines in `frontend/nginx.conf` to match.
-
-**Renewal is automatic** as long as the stack is running:
-- The `certbot` service (docker-compose.yml) loops `certbot renew` every
-  12h, which only actually renews within ~30 days of expiry.
-- `frontend/start.sh` reloads nginx every 6h, so a renewed certificate gets
-  picked up without needing a container restart.
+TLS is **not** part of this project. The `frontend` container serves plain
+HTTP only (`frontend/nginx.conf`: static app plus `/api` and `/ws` proxied to
+`backend`). In production, an nginx installed and managed separately on the
+host terminates TLS and proxies to it — bind `frontend` to loopback with
+`HTTP_PORT=127.0.0.1:8080` in `.env` and point that nginx at
+`http://127.0.0.1:8080`, forwarding the WebSocket upgrade headers for `/ws/`
+and allowing request bodies of at least 10m for Add Fleet bulk uploads.
 
 ## Switching the database
 
@@ -718,12 +878,27 @@ python3 generate_customer_routers.py   # rewrites customer_routers_seed.json (10
 | `KAFKA_BOOTSTRAP_SERVERS` | backend, normalizer, correlator | `kafka:9092` | Kafka broker address for the alarm pipeline (see "Alarm pipeline" above) |
 | `NEO4J_URI` | backend, correlator | `bolt://neo4j:7687` | Topology graph connection - written by `backend` (on BGP seed), read by `correlator` (root-cause lookups) |
 | `NEO4J_USER` / `NEO4J_PASSWORD` | backend, correlator | `neo4j` / `ncrpassword` | Neo4j credentials the app connects with. `NEO4J_PASSWORD` also drives the `neo4j` service's own `NEO4J_AUTH` in `docker-compose.yml` (`${NEO4J_PASSWORD:-ncrpassword}`), so changing it in `.env` updates both sides from one value; `NEO4J_USER` only changes what the app sends - the server's admin username is always `neo4j` (the image's own default), so leave it as-is unless you also change that server-side |
+| `AUTH_SECRET` | backend | random per process | Signs login tokens. Set it, or every backend restart signs everyone out (and multiple replicas won't accept each other's tokens) |
+| `AUTH_TOKEN_TTL_HOURS` | backend | `12` | How long a login lasts |
+| `SERVICE_API_TOKEN` | backend, simulator, `import-fleet.py` | unset (service auth off) | Admin-level bearer token for automation - see "Users and roles". Required by `docker-compose.dev.yml` |
+| `ADMIN_INITIAL_PASSWORD` | backend | `adminadmin` | Password for the `admin` account created on a fresh database |
+| `HTTP_PORT` | frontend (host side) | `80` | Host port `frontend` publishes (plain HTTP); set e.g. `127.0.0.1:8080` behind the external nginx (see "HTTPS / reverse proxy") |
+| `FIBER_FAULT_SIMULATION` | backend | `false` | Run the synthetic fiber-cut generator (`app/fiber_faults.py`: fake OPTICAL_ALARM + IS-IS flaps every `FIBER_FAULT_INTERVAL_MIN_SECONDS`-`FIBER_FAULT_INTERVAL_MAX_SECONDS`, picking a random country first and then a random link in it, so every region gets cuts). Dev/demo only - `docker-compose.dev.yml` and `k8s/02-configmap.yaml` set it to `true` |
+| `FIBER_FAULT_INTERVAL_MIN_SECONDS` / `FIBER_FAULT_INTERVAL_MAX_SECONDS` | backend | `180` / `360` | Gap between synthetic fiber cuts. Each cut opens an OPTICAL_ALARM plus IS-IS down/up incidents, so this is the main lever on simulated incident volume |
+| `FIBER_FAULT_DURATION_SECONDS` | backend | `60` | How long each synthetic fiber cut lasts before it heals |
+| `NOMINATIM_URL` | backend | `https://nominatim.openstreetmap.org` | Geocoder behind `GET /api/geocode`, which Add Fleet uses to fill latitude/longitude for cities not in its built-in list. The backend needs outbound internet access to reach it; point this at a self-hosted Nominatim to avoid the public instance's 1 request/s limit |
 | `TRAP_PORT` | backend | `1162` | UDP port the trap listener binds |
+| `INCIDENT_SETTLE_SECONDS` | correlator | `20` | How long a new incident waits before auto-heal runs (see "Incident workflow") |
+| `INCIDENT_MONITORING_TIMEOUT_SECONDS` | correlator | `600` | How long a successful fix waits for the device's clear trap before it's escalated to triage |
+| `PUBLIC_BASE_URL` | backend | unset | Public URL of the UI, e.g. `https://ncr.example.com` — adds a link to the incident in team notification emails |
 | `FLAP_WINDOW_SECONDS` | backend | `600` | Sliding window for flap detection |
 | `FLAP_TRANSITION_THRESHOLD` | backend | `4` | Transitions within the window to call it "flapping" |
-| `FLAPPING_ROUTER_COUNT` / `DOWN_ROUTER_COUNT` | simulator | `5` / `3` | How many primaries misbehave |
-| `FLAPPING_BUNDLE_COUNT` | simulator | `3` | How many BGP-peering bundles get a chronically-flapping member (redundancy always absorbs it) |
-| `TICK_MIN_SECONDS` / `TICK_MAX_SECONDS` | simulator | `3` / `8` | Pace of the primary event stream |
-| `CUSTOMER_TICK_MIN_SECONDS` / `CUSTOMER_TICK_MAX_SECONDS` | simulator | `20` / `45` | Pace of the (much quieter) customer event stream |
+| `FLAPPING_ROUTER_COUNT` / `DOWN_ROUTER_COUNT` | simulator | `2` / `1` | How many primaries misbehave (picked from the whole fleet at simulator startup) |
+| `FLEET_REFRESH_SECONDS` | simulator | `120` | How often the simulator re-reads the fleet from the backend, so newly added routers start getting traps |
+| `FLAPPING_BUNDLE_COUNT` | simulator | `1` | How many BGP-peering bundles get a chronically-flapping member (redundancy always absorbs it) |
+| `FLAP_QUIET_MIN_SECONDS` / `FLAP_QUIET_MAX_SECONDS` | simulator | `300` / `600` | Quiet period between the flapping routers'/bundles' flap bursts |
+| `TICK_MIN_SECONDS` / `TICK_MAX_SECONDS` | simulator | `20` / `40` | Pace of the primary event stream |
+| `CUSTOMER_TICK_MIN_SECONDS` / `CUSTOMER_TICK_MAX_SECONDS` | simulator | `60` / `120` | Pace of the (much quieter) customer event stream |
+| `PRIMARY_EVENT_INTERVAL_SECONDS` / `CUSTOMER_EVENT_INTERVAL_SECONDS` | simulator | `7200` / `172800` | Scales both event streams with fleet size: the average time between random events for any one primary (2h) / customer (2 days). Once `interval / fleet size` is shorter than the `TICK_*` range the streams speed up to match, so routers added by bulk upload don't wait hours or days for their first event; small fleets keep the `TICK_*` pace. `0` turns scaling off |
 | `BGP_INCIDENT_INTERVAL_SECONDS` | simulator | `600` | Cadence of a guaranteed logical BGP flap (session-level, bundle unaffected) |
 | `BUNDLE_FAILURE_INTERVAL_SECONDS` | simulator | `900` | Cadence of a guaranteed full bundle failure (every member down — redundancy exhausted, peering actually drops) |

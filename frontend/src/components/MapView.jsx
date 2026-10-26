@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import L from "leaflet";
-import { CircleMarker, MapContainer, Polyline, Popup, TileLayer } from "react-leaflet";
+import { CircleMarker, MapContainer, Polyline, Popup, TileLayer, Tooltip, useMap } from "react-leaflet";
 import { seedBgpPeerings } from "../api.js";
+import { useHasRole } from "../auth.js";
 import { haversineKm, REPEATER_SPACING_KM } from "../geo.js";
 
 // Marker fill colors - kept vivid so routers pop against any tile background.
@@ -52,15 +53,23 @@ const REROUTE_DASH_LENGTH = 18; // sum of REROUTE_DASH - keeps the offset wrap s
 const LINK_SELECT_COLOR = "#a855f7";
 
 const MARKER_STROKE = "#0b0f1a";
+// L1 repeater dots - purple so they stand out from the routers and links.
+const REPEATER_FILL = "#a855f7";
+const REPEATER_STROKE = "#581c87";
 const ALERT_STROKE = "#f97316";
 // Dashed ring for a router that's an endpoint of a peering with an open L1
-// (fiber) incident, but hasn't itself failed auto-heal - distinguishes
+// (fiber) incident, but has nothing of its own in triage - distinguishes
 // "symptomatic of an upstream physical fault" from the solid ALERT_STROKE
-// ring, which means this router's own remediation attempt failed.
+// ring, which means this router has an incident nobody has picked up yet.
 const SYMPTOMATIC_STROKE = "#fb923c";
 
-// Blink cadence for routers whose auto-heal attempt failed to fix the
-// problem - stops on its own once the router recovers, since
+// Halo around every router in a highlighted incident's blast radius (see
+// backend/app/impact.py) - red when customers have actually lost service,
+// amber when they're only running on reduced redundancy.
+const IMPACT_COLOR = { outage: "#f87171", degraded: "#facc15" };
+
+// Blink cadence for routers with an incident in triage (needs_attention) -
+// stops on its own once it's acknowledged, dispatched or resolved, since
 // needs_attention flips back to false server-side at that point.
 const BLINK_INTERVAL_MS = 500;
 
@@ -140,7 +149,7 @@ function RouterMarker({
   const shouldBlink = r.needs_attention || connectionIssue;
   const alerting = shouldBlink && blinkOn;
   const statusColor = r.router_type === "customer" ? CUSTOMER_STATUS_COLOR : STATUS_COLOR;
-  // needs_attention (solid ring, own remediation failed) always wins over
+  // needs_attention (solid ring, own incident in triage) always wins over
   // symptomatic (dashed ring, upstream fiber cut correlated to this router).
   const showSymptomaticRing = symptomatic && !r.needs_attention;
   return (
@@ -179,7 +188,7 @@ function RouterMarker({
             </div>
             {r.needs_attention && (
               <div style={{ color: ALERT_STROKE, fontWeight: 600, marginTop: "0.25rem" }}>
-                ⚠ auto-heal failed — needs attention
+                ⚠ incident in triage — needs attention
               </div>
             )}
             {connectionIssue && !r.needs_attention && (
@@ -204,7 +213,30 @@ function RouterMarker({
   );
 }
 
-export default function MapView({ routers, peerings = [], onSelectRouter, onFleetChanged }) {
+// Zooms to the highlighted blast radius once, when it's first shown - not on
+// every routers refresh, so the operator can still pan away from it.
+function FitToRouters({ highlightKey, points, maxZoom = 7 }) {
+  const map = useMap();
+  useEffect(() => {
+    if (points.length === 0) return;
+    map.fitBounds(L.latLngBounds(points), { padding: [60, 60], maxZoom });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightKey, map]);
+  return null;
+}
+
+export default function MapView({
+  routers,
+  peerings = [],
+  onSelectRouter,
+  onFleetChanged,
+  impactHighlight = null,
+  onClearImpact,
+  faultHighlight = null,
+  onClearFault,
+}) {
+  // Creating a BGP link goes through the admin-only /api/bgp/seed.
+  const canLink = useHasRole("admin");
   // Top-level L1/L3 layer toggles (§7.2 of the design doc this map is
   // modeled on) - L1 is the physical fiber plane (repeater dots + fault
   // segment), L3 is the logical/control-plane plane (routers, BGP/customer
@@ -254,7 +286,7 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
     return ids;
   }, [openL1Peerings]);
 
-  // Gates the blink interval below - covers the existing "auto-heal failed"
+  // Gates the blink interval below - covers the existing "incident in triage"
   // case, a customer CPE's own down/flapping status (see connectionIssue in
   // RouterMarker), and now an open L1 fiber incident's pulsing fault
   // segment, so the interval only runs while something actually needs it
@@ -285,6 +317,12 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
     () => peerings.reduce((sum, p) => sum + (p.repeater_count || 0), 0),
     [peerings]
   );
+
+  const impactRouters = useMemo(
+    () => (impactHighlight ? impactHighlight.router_ids.map((id) => routerById[id]).filter(Boolean) : []),
+    [impactHighlight, routerById]
+  );
+  const impactPoints = useMemo(() => impactRouters.map((r) => [r.latitude, r.longitude]), [impactRouters]);
 
   const linkRouterA = linkSelection[0] != null ? routerById[linkSelection[0]] : null;
   const linkRouterB = linkSelection[1] != null ? routerById[linkSelection[1]] : null;
@@ -430,6 +468,7 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
           />
           Show reroutes ({activeReroutes.length})
         </label>
+        {canLink && (
         <label
           style={{
             display: "flex",
@@ -444,6 +483,7 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
           <input type="checkbox" checked={linkMode} onChange={(e) => toggleLinkMode(e.target.checked)} />
           🔗 Link BGP routers
         </label>
+        )}
         {linkMode && (
           <div style={{ fontSize: "0.72rem", color: "#9aa4bf" }}>
             Click two primary routers to connect them.
@@ -526,6 +566,77 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
         </div>
       )}
 
+      {impactHighlight && (
+        <div
+          style={{
+            position: "absolute",
+            top: 12,
+            right: 12,
+            zIndex: 1000,
+            background: "#161c2cdd",
+            border: `1px solid ${IMPACT_COLOR[impactHighlight.level]}`,
+            borderRadius: 8,
+            padding: "0.5rem 0.8rem",
+            fontSize: "0.8rem",
+            maxWidth: 300,
+          }}
+        >
+          <div style={{ fontWeight: 600, color: IMPACT_COLOR[impactHighlight.level] }}>
+            Blast radius of incident #{impactHighlight.incidentId} ({impactHighlight.incidentType})
+          </div>
+          <div style={{ color: "#9aa4bf", margin: "0.25rem 0 0.4rem" }}>
+            {impactHighlight.primary_router_ids.length} primar
+            {impactHighlight.primary_router_ids.length === 1 ? "y" : "ies"}, {impactHighlight.customer_count} customer
+            {impactHighlight.customer_count === 1 ? "" : "s"}
+            {impactHighlight.customers_down > 0
+              ? ` — ${impactHighlight.customers_down} without service`
+              : " — all still reachable (reduced redundancy)"}
+            . Snapshot from when you opened it.
+          </div>
+          <button type="button" onClick={onClearImpact}>
+            Clear highlight
+          </button>
+        </div>
+      )}
+
+      {faultHighlight && (
+        <div
+          style={{
+            position: "absolute",
+            top: 12,
+            right: 12,
+            zIndex: 1000,
+            background: "#161c2cdd",
+            border: `1px solid ${ALERT_STROKE}`,
+            borderRadius: 8,
+            padding: "0.5rem 0.8rem",
+            fontSize: "0.8rem",
+            maxWidth: 340,
+          }}
+        >
+          <div style={{ fontWeight: 600, color: ALERT_STROKE }}>
+            Faulty span {faultHighlight.start.label} → {faultHighlight.end.label} (incident #{faultHighlight.incidentId}
+            {faultHighlight.status === "resolved" ? ", resolved" : ""})
+          </div>
+          <div style={{ color: "#9aa4bf", margin: "0.25rem 0 0.4rem", lineHeight: 1.45 }}>
+            {faultHighlight.router_a} ↔ {faultHighlight.router_b}, span {faultHighlight.segment_index + 1} of{" "}
+            {faultHighlight.segment_count} ({faultHighlight.segment_length_km} km)
+            {[faultHighlight.start, faultHighlight.end].map((pt) => (
+              <div key={pt.label}>
+                <strong style={{ color: "#e6e9f0" }}>{pt.label}</strong> · km {pt.km_from_a} · {pt.latitude},{" "}
+                {pt.longitude}
+              </div>
+            ))}
+            {faultHighlight.repeaters_to_check.length > 0
+              ? `Inspect ${faultHighlight.repeaters_to_check.join(" & ")}, replace the one that fails; otherwise OTDR the span.`
+              : "No repeater on this span - check the router-end optics, then OTDR the span."}
+          </div>
+          <button type="button" onClick={onClearFault}>
+            Clear
+          </button>
+        </div>
+      )}
+
       <MapContainer
         center={[20, 10]}
         zoom={2}
@@ -589,36 +700,49 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
                   ))
                 : [];
             const reps = repeaterPositions(positions[0], positions[1], p.repeater_count || 0);
+            // Named R1..Rn from router_a, matching backend/app/fault_location.py,
+            // so a field crew can match the dot to the alarm's span.
+            const kmAt = (k) => (((p.distance_km || 0) * k) / ((p.repeater_count || 0) + 1)).toFixed(1);
             const repeaters = showL1
               ? reps.flatMap((point, ri) =>
                   worldCopies([point]).map((copy, ci) => (
                     <CircleMarker
                       key={`repeater-${p.id}-${ri}-${ci}`}
                       center={copy[0]}
-                      radius={2}
+                      radius={3}
                       pathOptions={{
-                        color: MARKER_STROKE,
-                        weight: showRepeaters ? 0.5 : 0,
-                        fillColor: "#ffffff",
+                        color: REPEATER_STROKE,
+                        weight: showRepeaters ? 1 : 0,
+                        fillColor: REPEATER_FILL,
                         fillOpacity: showRepeaters ? 0.9 : 0.08,
                         opacity: showRepeaters ? 1 : 0.08,
                       }}
-                    />
+                    >
+                      {showRepeaters && (
+                        <Tooltip>
+                          R{ri + 1} · km {kmAt(ri + 1)} from {a.hostname}
+                          <br />
+                          {a.hostname} ↔ {b.hostname}
+                        </Tooltip>
+                      )}
+                    </CircleMarker>
                   ))
                 )
               : [];
-            // active_fault_segment is 1-based: the fault sits strictly
-            // between the (segment-1)-th and segment-th repeater (0-based
-            // into `reps`), never touching either router endpoint - see
-            // app/fiber_faults.py. open_l1_incident_id means this is a real,
+            // active_fault_segment k is the span between repeaters Rk and
+            // R(k+1) along the full run [router_a, R1..Rn, router_b] - so 0
+            // and n are the router-adjacent spans (see backend/app/
+            // fault_location.py). open_l1_incident_id means this is a real,
             // still-open OPTICAL_ALARM incident (not just the cosmetic
             // overlay) - pulse it via the same blink timer as needs_attention
             // routers so it visually reads as "root cause, actively faulted".
             const fault = p.active_fault_segment;
             const hasOpenL1Incident = Boolean(p.open_l1_incident_id);
+            const runPoints = [positions[0], ...reps, positions[1]];
+            const pointLabel = (k) => (k === 0 ? a.hostname : k === runPoints.length - 1 ? b.hostname : `R${k}`);
             const faultLine =
-              showL1 && fault && reps[fault - 1] && reps[fault]
-                ? worldCopies(unwrapPositions([reps[fault - 1], reps[fault]])).map((pos, i) => (
+              showL1 && fault != null && runPoints[fault] && runPoints[fault + 1]
+                ? worldCopies(unwrapPositions([runPoints[fault], runPoints[fault + 1]])).map((pos, i) => (
                     <Polyline
                       key={`fault-${p.id}-${i}`}
                       positions={pos}
@@ -627,7 +751,13 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
                         weight: hasOpenL1Incident && blinkOn ? 5 : 4,
                         opacity: hasOpenL1Incident ? (blinkOn ? 1 : 0.45) : 1,
                       }}
-                    />
+                    >
+                      <Tooltip sticky>
+                        Faulty span {pointLabel(fault)} → {pointLabel(fault + 1)} · km {kmAt(fault)}–{kmAt(fault + 1)}
+                        <br />
+                        {a.hostname} ↔ {b.hostname}
+                      </Tooltip>
+                    </Polyline>
                   ))
                 : [];
             return [...lines, ...repeaters, ...faultLine];
@@ -689,6 +819,56 @@ export default function MapView({ routers, peerings = [], onSelectRouter, onFlee
               onLinkClick={handleMarkerLinkClick}
             />
           ))}
+
+        {impactHighlight &&
+          impactRouters.map((r) => (
+            <CircleMarker
+              key={`impact-${r.id}`}
+              center={[r.latitude, r.longitude]}
+              radius={r.router_type === "customer" ? 8 : 12}
+              interactive={false}
+              pathOptions={{
+                color: IMPACT_COLOR[impactHighlight.level],
+                weight: 2.5,
+                fill: false,
+                opacity: blinkOn || !anyBlinking ? 1 : 0.6,
+              }}
+            />
+          ))}
+        {impactHighlight && <FitToRouters highlightKey={impactHighlight.incidentId} points={impactPoints} />}
+
+        {faultHighlight && (
+          <>
+            <Polyline
+              positions={unwrapPositions([
+                [faultHighlight.start.latitude, faultHighlight.start.longitude],
+                [faultHighlight.end.latitude, faultHighlight.end.longitude],
+              ])}
+              interactive={false}
+              pathOptions={{ color: ALERT_STROKE, weight: 7, opacity: 0.35 }}
+            />
+            {[faultHighlight.start, faultHighlight.end].map((pt) => (
+              <CircleMarker
+                key={`fault-point-${pt.label}`}
+                center={[pt.latitude, pt.longitude]}
+                radius={pt.kind === "repeater" ? 7 : 10}
+                pathOptions={{ color: ALERT_STROKE, weight: 3, fill: pt.kind === "repeater", fillColor: REPEATER_FILL, fillOpacity: 1 }}
+              >
+                <Tooltip permanent direction="top" offset={[0, -8]}>
+                  {pt.label} · km {pt.km_from_a}
+                </Tooltip>
+              </CircleMarker>
+            ))}
+            <FitToRouters
+              highlightKey={`fault-${faultHighlight.incidentId}`}
+              points={[
+                [faultHighlight.start.latitude, faultHighlight.start.longitude],
+                [faultHighlight.end.latitude, faultHighlight.end.longitude],
+              ]}
+              maxZoom={10}
+            />
+          </>
+        )}
       </MapContainer>
     </div>
   );

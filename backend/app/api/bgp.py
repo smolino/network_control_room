@@ -1,13 +1,18 @@
+import logging
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.bgp_topology import build_established_adjacency, shortest_reroute_path
 from app.bundles import ensure_bundles_for_peering
-from app.db import get_db
+from app.auth import require_admin
+from app.db import SessionLocal, get_db
 from app.fiber_faults import active_faults
 from app.models import AlarmLayer, BgpPeering, BgpSessionStatus, Incident, IncidentStatus, InterfaceBundle, Router
 from app.schemas import BgpPeerIn, BgpPeeringOut, InterfaceBundleOut, InterfaceOut
-from app.topology_graph import sync_peering_to_neo4j
+from app.topology_graph import resync_peering_to_neo4j, sync_peering_to_neo4j
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/bgp", tags=["bgp"])
 
@@ -32,13 +37,19 @@ def _to_peering_out(db: Session, peering: BgpPeering, adjacency: dict[int, list[
         reroute_path = shortest_reroute_path(adjacency, peering.router_a_id, peering.router_b_id)
     out = BgpPeeringOut.model_validate(peering)
     out.reroute_path = reroute_path
-    out.active_fault_segment = active_faults.get(peering.id)
     open_l1_incident = (
-        db.query(Incident.id)
+        db.query(Incident.id, Incident.fault_segment_index)
         .filter(Incident.peering_id == peering.id, Incident.layer == AlarmLayer.L1, Incident.status == IncidentStatus.OPEN)
         .first()
     )
     out.open_l1_incident_id = open_l1_incident[0] if open_l1_incident else None
+    # The open alarm's own segment wins over fiber_faults' in-memory state:
+    # it survives a backend restart and also covers real (non-simulated)
+    # fiber alarms.
+    if open_l1_incident and open_l1_incident[1] is not None:
+        out.active_fault_segment = open_l1_incident[1]
+    else:
+        out.active_fault_segment = active_faults.get(peering.id)
 
     bundle_a = db.query(InterfaceBundle).filter(
         InterfaceBundle.peering_id == peering.id, InterfaceBundle.router_id == peering.router_a_id
@@ -58,7 +69,7 @@ def list_peerings(db: Session = Depends(get_db)):
     return [_to_peering_out(db, p, adjacency) for p in peerings]
 
 
-@router.post("/seed", response_model=list[BgpPeeringOut])
+@router.post("/seed", response_model=list[BgpPeeringOut], dependencies=[Depends(require_admin)])
 def seed_peerings(pairs: list[BgpPeerIn], db: Session = Depends(get_db)):
     """Bulk idempotent insert used by the trap simulator on startup, once
     the routers themselves have already been seeded. Also derives and seeds
@@ -111,3 +122,34 @@ def seed_peerings(pairs: list[BgpPeerIn], db: Session = Depends(get_db)):
         sync_peering_to_neo4j(peering, bundle_a, bundle_b)
 
     return result
+
+
+def repair_peering_bundles() -> None:
+    """Gives every peering that's missing its own bundle on either side one
+    (next free Port-channel, see app.bundles.ensure_bundles_for_peering) and
+    re-links its fiber span in the topology graph. Before that fix, a link
+    added in a separate request from its routers' other links could reuse
+    another peering's bundle name and end up with no bundle at all. Runs
+    once at backend startup; a no-op once everything is consistent."""
+    db = SessionLocal()
+    try:
+        has_bundle = {(router_id, peering_id) for router_id, peering_id in db.query(InterfaceBundle.router_id, InterfaceBundle.peering_id)}
+        repaired = []
+        for peering in db.query(BgpPeering).all():
+            if (peering.router_a_id, peering.id) in has_bundle and (peering.router_b_id, peering.id) in has_bundle:
+                continue
+            bundle_a = ensure_bundles_for_peering(db, peering.id, peering.router_a, 0)
+            bundle_b = ensure_bundles_for_peering(db, peering.id, peering.router_b, 0)
+            repaired.append((peering, bundle_a, bundle_b))
+        db.commit()
+        for peering, bundle_a, bundle_b in repaired:
+            db.refresh(bundle_a)
+            db.refresh(bundle_b)
+            resync_peering_to_neo4j(peering, bundle_a, bundle_b)
+        if repaired:
+            logger.warning("Repaired interface bundles for %d BGP peering(s): %s", len(repaired), [p.id for p, _, _ in repaired])
+    except Exception:
+        db.rollback()
+        logger.exception("Couldn't repair BGP peering bundles")
+    finally:
+        db.close()

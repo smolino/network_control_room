@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { bulkResolveIncidents, fetchIncidentRemediation, resolveAllOpenIncidents, resolveIncident } from "../api.js";
+import { fetchIncidentRemediation } from "../api.js";
 
 const REMEDIATION_BADGE = {
   success: "up",
@@ -7,13 +7,90 @@ const REMEDIATION_BADGE = {
   skipped: "unknown",
 };
 
-// A synthetic filter value (not a real incident_type) selecting every
-// incident whose auto-heal step declined to act - security/hardware/
-// out-of-band-change events that always go to a human instead of being
-// auto-remediated (see NOTIFY_ONLY_REASONS in the backend's remediation
-// engine). Lets an operator pull up exactly what still needs manual
-// triage regardless of which of those incident types it is.
-const NEEDS_REVIEW_FILTER = "__needs_review__";
+// Workflow stages, in lifecycle order - see backend/app/models.py
+// IncidentStage and backend/app/incidents/service.py.
+const STAGES = ["new", "suppressed", "monitoring", "triage", "acknowledged", "dispatched", "resolved"];
+const STAGE_BADGE = {
+  new: "unknown",
+  suppressed: "unknown",
+  monitoring: "flapping",
+  triage: "down",
+  acknowledged: "flapping",
+  dispatched: "flapping",
+  resolved: "up",
+};
+
+export function StageBadge({ incident }) {
+  const stage = incident.stage ?? incident.status;
+  return <span className={`badge ${STAGE_BADGE[stage] ?? incident.status}`}>{stage}</span>;
+}
+
+const PRIORITY_RANK = { P1: 1, P2: 2, P3: 3, P4: 4 };
+
+const IMPACT_COLOR = { outage: "#f87171", degraded: "#facc15" };
+
+// Open, service-affecting incidents only (see backend/app/impact.py) -
+// everything else has no blast radius. Sort key: customers actually down
+// first, then everyone merely degraded.
+function impactScore(incident) {
+  const impact = incident.impact;
+  return impact ? impact.customers_down * 100000 + impact.customer_count : -1;
+}
+
+function ImpactCell({ incident, onShowImpact }) {
+  const impact = incident.impact;
+  if (!impact) return <span style={{ color: "#5b6479" }}>—</span>;
+  const label =
+    impact.customers_down > 0
+      ? `${impact.customers_down}/${impact.customer_count} customers down`
+      : `${impact.customer_count} customer${impact.customer_count === 1 ? "" : "s"} at risk`;
+  return (
+    <div>
+      <span
+        style={{ color: IMPACT_COLOR[impact.level], fontWeight: 600, whiteSpace: "nowrap" }}
+        title={
+          impact.level === "outage"
+            ? "Customers that have lost service: their primary is cut off from the backbone, or the CPE itself is down"
+            : "Customers still reachable, but over reduced redundancy"
+        }
+      >
+        {impact.level === "outage" ? "⛔" : "⚠"} {label}
+      </span>
+      {impact.primary_router_ids.length > 0 && (
+        <div style={{ fontSize: "0.72rem", color: "#9aa4bf" }}>
+          via {impact.primary_router_ids.length} primar{impact.primary_router_ids.length === 1 ? "y" : "ies"}
+        </div>
+      )}
+      {onShowImpact && (
+        <span className="link" style={{ fontSize: "0.72rem" }} onClick={() => onShowImpact(incident)}>
+          Show on map
+        </span>
+      )}
+    </div>
+  );
+}
+
+// Fiber cuts only: the span the alarm isolated the fault to, and the
+// repeaters bounding it - see backend/app/fault_location.py.
+export function FaultLocationNote({ location, onLocate }) {
+  if (!location) return null;
+  const { start, end } = location;
+  return (
+    <div style={{ fontSize: "0.74rem", color: "#fb923c", marginTop: "0.25rem" }}>
+      📍 Faulty span <strong>{start.label} → {end.label}</strong> (span {location.segment_index + 1} of{" "}
+      {location.segment_count}, km {start.km_from_a}–{end.km_from_a} of {location.distance_km})
+      {location.repeaters_to_check.length > 0 && <> · check {location.repeaters_to_check.join(" & ")}</>}
+      {onLocate && (
+        <>
+          {" "}
+          <span className="link" onClick={onLocate}>
+            Locate on map
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
 
 function AutoHealCell({ incident }) {
   const [expanded, setExpanded] = useState(false);
@@ -86,8 +163,12 @@ function AutoHealCell({ incident }) {
   );
 }
 
-export default function IncidentList({ incidents, routers, onSelectRouter }) {
+// Read-only history/search view - acting on incidents happens on the Human
+// Review board.
+export default function IncidentList({ incidents, routers, onSelectRouter, onShowImpact, onLocateFault }) {
+  const [sortBy, setSortBy] = useState("updated");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [stageFilter, setStageFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [layerFilter, setLayerFilter] = useState("all");
   // Symptomatic incidents (root_cause_incident_id set) are the L3 fallout
@@ -95,9 +176,6 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
   // root cause instead of a wall of correlated noise, per the design doc's
   // "suppressed from top-level view, visible on drill-down" model.
   const [hideSymptomatic, setHideSymptomatic] = useState(true);
-  const [resolvingIds, setResolvingIds] = useState(() => new Set());
-  const [bulkResolving, setBulkResolving] = useState(false);
-  const [resettingAll, setResettingAll] = useState(false);
 
   const routerById = useMemo(() => Object.fromEntries(routers.map((r) => [r.id, r])), [routers]);
   const incidentById = useMemo(() => Object.fromEntries(incidents.map((i) => [i.id, i])), [incidents]);
@@ -106,61 +184,19 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
     [incidents]
   );
 
-  const filtered = incidents.filter((i) => {
+  const matching = incidents.filter((i) => {
     if (statusFilter !== "all" && i.status !== statusFilter) return false;
+    if (stageFilter !== "all" && i.stage !== stageFilter) return false;
     if (layerFilter !== "all" && i.layer !== layerFilter) return false;
     if (hideSymptomatic && i.root_cause_incident_id != null) return false;
-    if (typeFilter === "all") return true;
-    if (typeFilter === NEEDS_REVIEW_FILTER) return i.remediation?.action_type === "NOTIFY_ONLY";
-    return i.incident_type === typeFilter;
+    return typeFilter === "all" || i.incident_type === typeFilter;
   });
-
-  const openShown = filtered.filter((i) => i.status === "open");
-
-  const handleResolve = async (id) => {
-    setResolvingIds((prev) => new Set(prev).add(id));
-    try {
-      await resolveIncident(id);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setResolvingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
-  };
-
-  const handleBulkResolve = async () => {
-    if (openShown.length === 0) return;
-    if (!window.confirm(`Resolve ${openShown.length} open incident${openShown.length === 1 ? "" : "s"}?`)) {
-      return;
-    }
-    setBulkResolving(true);
-    try {
-      await bulkResolveIncidents(openShown.map((i) => i.id));
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setBulkResolving(false);
-    }
-  };
-
-  const handleResetAll = async () => {
-    if (!window.confirm("Reset ALL open incidents system-wide, across every router, regardless of the current filter? This cannot be undone.")) {
-      return;
-    }
-    setResettingAll(true);
-    try {
-      const resolved = await resolveAllOpenIncidents();
-      window.alert(`Reset ${resolved.length} open incident${resolved.length === 1 ? "" : "s"}.`);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setResettingAll(false);
-    }
-  };
+  const filtered =
+    sortBy === "impact"
+      ? [...matching].sort((a, b) => impactScore(b) - impactScore(a))
+      : sortBy === "priority"
+        ? [...matching].sort((a, b) => (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9))
+        : matching;
 
   return (
     <div className="page">
@@ -170,9 +206,14 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
           <option value="open">Open</option>
           <option value="resolved">Resolved</option>
         </select>
+        <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)}>
+          <option value="all">All stages</option>
+          {STAGES.map((st) => (
+            <option key={st} value={st}>{st}</option>
+          ))}
+        </select>
         <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
           <option value="all">All types</option>
-          <option value={NEEDS_REVIEW_FILTER}>⚠ Needs manual review</option>
           {types.map((t) => (
             <option key={t} value={t}>{t}</option>
           ))}
@@ -190,52 +231,27 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
           />
           Hide symptomatic
         </label>
-        <button
-          onClick={handleBulkResolve}
-          disabled={openShown.length === 0 || bulkResolving}
-          style={{
-            marginLeft: "auto",
-            padding: "0.4rem 0.9rem",
-            background: openShown.length ? "#262f45" : "#161c2c",
-            color: openShown.length ? "#fff" : "#5b6479",
-            border: "1px solid #262f45",
-            borderRadius: 6,
-            cursor: openShown.length ? "pointer" : "not-allowed",
-          }}
-        >
-          {bulkResolving ? "Resolving…" : `Resolve ${openShown.length} open (shown)`}
-        </button>
-        <button
-          onClick={handleResetAll}
-          disabled={resettingAll}
-          title="Resolves every open incident system-wide, ignoring the filters above and the list's 200-row cap"
-          style={{
-            padding: "0.4rem 0.9rem",
-            background: "#7c2d12",
-            color: "#fff",
-            border: "1px solid #9a3412",
-            borderRadius: 6,
-            cursor: resettingAll ? "not-allowed" : "pointer",
-            opacity: resettingAll ? 0.6 : 1,
-          }}
-        >
-          {resettingAll ? "Resetting…" : "Reset ALL open incidents"}
-        </button>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+          <option value="updated">Sort: most recent</option>
+          <option value="priority">Sort: priority</option>
+          <option value="impact">Sort: customer impact</option>
+        </select>
       </div>
       <div className="table-scroll">
         <table>
           <thead>
             <tr>
               <th>Updated</th>
+              <th>Priority</th>
               <th>Layer</th>
               <th>Type</th>
               <th>Router</th>
               <th>Interface</th>
               <th>Status</th>
+              <th>Impact</th>
               <th>Traps</th>
               <th>Description</th>
               <th>Auto-heal</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -244,6 +260,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
               return (
                 <tr key={i.id}>
                   <td>{i.updated_at ? new Date(i.updated_at).toLocaleString() : "—"}</td>
+                  <td>{i.priority ?? "—"}</td>
                   <td>
                     <span className={`badge ${i.layer === "L1" ? "down" : "unknown"}`}>{i.layer}</span>
                   </td>
@@ -255,16 +272,30 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
                   </td>
                   <td>{i.interface_name || "—"}</td>
                   <td>
-                    <span className={`badge ${i.status}`}>{i.status}</span>
-                    {i.resolved_manually && (
+                    <StageBadge incident={i} />
+                    {i.owner_username && i.status === "open" && (
                       <div style={{ fontSize: "0.7rem", color: "#9aa4bf", marginTop: "0.15rem" }}>
-                        resolved manually
+                        owner {i.owner_username}
+                      </div>
+                    )}
+                    {i.status === "resolved" && i.resolution_reason && (
+                      <div
+                        style={{ fontSize: "0.7rem", color: "#9aa4bf", marginTop: "0.15rem" }}
+                        title={i.resolution_note ?? undefined}
+                      >
+                        {i.resolution_reason.replace(/_/g, " ")}
+                        {i.resolved_by && i.resolved_by !== "system" && ` by ${i.resolved_by}`}
                       </div>
                     )}
                   </td>
+                  <td><ImpactCell incident={i} onShowImpact={onShowImpact} /></td>
                   <td>{i.trap_count}</td>
-                  <td>
+                  <td className="wrap-cell">
                     {i.description}
+                    <FaultLocationNote
+                      location={i.fault_location}
+                      onLocate={onLocateFault ? () => onLocateFault(i) : undefined}
+                    />
                     {i.root_cause_incident_id != null && (
                       <div style={{ fontSize: "0.72rem", color: "#fb923c", marginTop: "0.2rem" }}>
                         ↳ symptomatic of #{i.root_cause_incident_id}
@@ -273,23 +304,12 @@ export default function IncidentList({ incidents, routers, onSelectRouter }) {
                     )}
                   </td>
                   <td><AutoHealCell incident={i} /></td>
-                  <td>
-                    {i.status === "open" && (
-                      <span
-                        className="link"
-                        style={{ opacity: resolvingIds.has(i.id) ? 0.5 : 1 }}
-                        onClick={() => !resolvingIds.has(i.id) && handleResolve(i.id)}
-                      >
-                        {resolvingIds.has(i.id) ? "Resolving…" : "Resolve"}
-                      </span>
-                    )}
-                  </td>
                 </tr>
               );
             })}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={10}>No incidents match this filter.</td>
+                <td colSpan={11}>No incidents match this filter.</td>
               </tr>
             )}
           </tbody>

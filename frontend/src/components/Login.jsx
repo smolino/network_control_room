@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { verifyTOTP } from "../totp.js";
-import { verifyCredentials } from "../users.js";
+import { login } from "../api.js";
 
 const NODE_COUNT = 70;
 const LINK_DISTANCE = 140;
@@ -89,43 +88,44 @@ export default function Login({ onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [otpCode, setOtpCode] = useState("");
-  const [pendingUser, setPendingUser] = useState(null);
+  // Set once the backend answers "otp_required" - the password stays in
+  // state so the second step can resubmit both together.
+  const [otpStep, setOtpStep] = useState(false);
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleCredentialsSubmit = (e) => {
-    e.preventDefault();
-    const user = verifyCredentials(username, password);
-    if (!user) {
-      setError("Invalid username or password");
-      return;
-    }
-    setError("");
-    if (user.otpSecret) {
-      setPendingUser(user);
-    } else {
-      onLogin(user.username);
+  const submit = async (code) => {
+    setSubmitting(true);
+    try {
+      const session = await login(username, password, code);
+      setError("");
+      onLogin(session);
+    } catch (err) {
+      if (err.detail === "otp_required") {
+        setError("");
+        setOtpStep(true);
+      } else {
+        setError(err.status === 401 ? err.message : `Couldn't sign in: ${err.message}`);
+      }
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  const handleOtpSubmit = async (e) => {
+  const handleCredentialsSubmit = (e) => {
     e.preventDefault();
-    try {
-      const ok = await verifyTOTP(pendingUser.otpSecret, otpCode);
-      if (ok) {
-        setError("");
-        onLogin(pendingUser.username);
-      } else {
-        setError("Invalid authentication code");
-      }
-    } catch (err) {
-      setError(`Couldn't verify that code: ${err.message}`);
-    }
+    submit();
+  };
+
+  const handleOtpSubmit = (e) => {
+    e.preventDefault();
+    submit(otpCode);
   };
 
   return (
     <div className="login-page">
       <NetworkBackground />
-      {!pendingUser ? (
+      {!otpStep ? (
         <form className="login-card" onSubmit={handleCredentialsSubmit}>
           <h1>Network Control Room</h1>
           <p className="login-subtitle">Sign in to access the fleet</p>
@@ -153,8 +153,8 @@ export default function Login({ onLogin }) {
 
           {error && <div className="login-error">{error}</div>}
 
-          <button type="submit" className="login-submit">
-            Sign in
+          <button type="submit" className="login-submit" disabled={submitting}>
+            {submitting ? "Signing in…" : "Sign in"}
           </button>
         </form>
       ) : (
@@ -176,8 +176,8 @@ export default function Login({ onLogin }) {
 
           {error && <div className="login-error">{error}</div>}
 
-          <button type="submit" className="login-submit">
-            Verify
+          <button type="submit" className="login-submit" disabled={submitting}>
+            {submitting ? "Verifying…" : "Verify"}
           </button>
         </form>
       )}

@@ -56,6 +56,11 @@ BGP_PEER_OID = "1.3.6.1.4.1.9.9.9999.1.3"  # mgmt IP of the BGP neighbor this tr
 # supplies the label/severity for the TrapEvent audit row.
 FIBER_CUT_OID = "1.3.6.1.4.1.9.9.9999.4.1"
 FIBER_CUT_CLEAR_OID = "1.3.6.1.4.1.9.9.9999.4.2"
+# Varbind on FIBER_CUT_OID: which span of the peering's fiber run lost
+# signal (0 = router_a to R1, k = Rk to R(k+1)) - what a repeater
+# supervisory system reports, and what app.fault_location turns into the
+# repeaters a field crew needs to check.
+FIBER_SEGMENT_OID = "1.3.6.1.4.1.9.9.9999.4.3"
 
 TRAP_OID_MAP: dict[str, tuple[str, IncidentType, str]] = {
     LINK_DOWN_OID: ("linkDown", IncidentType.LINK_DOWN, "critical"),

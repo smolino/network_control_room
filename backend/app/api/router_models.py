@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.auth import require_admin
 from app.db import get_db
 from app.models import RouterModel
 from app.schemas import RouterModelIn, RouterModelOut
@@ -14,7 +15,7 @@ def list_router_models(db: Session = Depends(get_db)):
     return db.query(RouterModel).order_by(RouterModel.vendor, RouterModel.model).all()
 
 
-@router.post("", response_model=RouterModelOut)
+@router.post("", response_model=RouterModelOut, dependencies=[Depends(require_admin)])
 def create_router_model(payload: RouterModelIn, db: Session = Depends(get_db)):
     """Adds one (vendor, model) pair to the Add Fleet form's dropdown
     catalog. Idempotent on an exact (vendor, model) match, same as
@@ -34,7 +35,7 @@ def create_router_model(payload: RouterModelIn, db: Session = Depends(get_db)):
     return obj
 
 
-@router.put("/{router_model_id}", response_model=RouterModelOut)
+@router.put("/{router_model_id}", response_model=RouterModelOut, dependencies=[Depends(require_admin)])
 def update_router_model(router_model_id: int, payload: RouterModelIn, db: Session = Depends(get_db)):
     """Edits an existing catalog entry in place - e.g. fixing a typo'd
     model name doesn't leave the wrong one behind for anyone who already

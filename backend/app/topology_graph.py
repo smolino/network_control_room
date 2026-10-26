@@ -65,6 +65,19 @@ def sync_peering_to_neo4j(peering, bundle_a, bundle_b) -> None:
         )
 
 
+def resync_peering_to_neo4j(peering, bundle_a, bundle_b) -> None:
+    """Like sync_peering_to_neo4j, but first drops every SUPPORTED_BY edge
+    into this peering's span - for repairing a span that had another
+    peering's interfaces wrongly attached to it (see
+    api/bgp.py:repair_peering_bundles)."""
+    with get_driver().session() as session:
+        session.run(
+            "MATCH (:Interface)-[r:SUPPORTED_BY]->(:FiberSpan {peering_id: $peering_id}) DELETE r",
+            peering_id=peering.id,
+        )
+    sync_peering_to_neo4j(peering, bundle_a, bundle_b)
+
+
 def delete_peering_from_neo4j(peering_id: int) -> None:
     """Removes the FiberSpan for this peering and the Interface nodes that
     were only SUPPORTED_BY it - an interface is only ever seeded onto one
@@ -118,3 +131,26 @@ def peering_ids_for_router(router_id: int) -> list[int]:
             router_id=router_id,
         )
         return [record["peering_id"] for record in result]
+
+
+def interfaces_for_peering(peering_id: int) -> list[tuple[int, str]]:
+    """(router_id, interface_name) for every interface SUPPORTED_BY this
+    peering's fiber span - the reverse of peering_ids_for_interface, used
+    when an L1 alarm opens to find L3 symptoms that got there first."""
+    with get_driver().session() as session:
+        result = session.run(
+            """
+            MATCH (i:Interface)-[:SUPPORTED_BY]->(:FiberSpan {peering_id: $peering_id})
+            RETURN i.router_id AS router_id, i.name AS name
+            """,
+            peering_id=peering_id,
+        )
+        return [(record["router_id"], record["name"]) for record in result]
+
+
+def clear_topology() -> None:
+    """Drops the whole topology graph - "Delete entire fleet" (see
+    api/simulation.py:reset_fleet). Re-populated by api/bgp.py:seed_peerings
+    as links are added again."""
+    with get_driver().session() as session:
+        session.run("MATCH (n) WHERE n:Router OR n:Interface OR n:FiberSpan DETACH DELETE n")

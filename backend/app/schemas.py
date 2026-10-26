@@ -6,14 +6,17 @@ from app.models import (
     AlarmLayer,
     BgpSessionStatus,
     BundleStatus,
+    IncidentStage,
     IncidentStatus,
     IncidentType,
     NotificationStatus,
     RemediationActionType,
     RemediationStatus,
+    ResolutionReason,
     RouterStatus,
     RouterType,
     TeamKind,
+    UserRole,
 )
 
 
@@ -53,8 +56,9 @@ class RouterOut(BaseModel):
     longitude: float
     status: RouterStatus
     last_seen_at: datetime | None = None
-    # True when an open incident's auto-heal action came back FAILED - the
-    # UI blinks the router's marker until it actually recovers.
+    # True while the router has an open incident in triage - one nobody has
+    # picked up yet (see app.incidents.service.needs_attention_router_ids).
+    # The UI blinks the router's marker until it's acknowledged or clears.
     needs_attention: bool = False
     # This router's IS-IS NET (Network Entity Title) - primaries only, since
     # customer CPE doesn't run the backbone IGP. See app.bundles.isis_net.
@@ -88,6 +92,50 @@ class RemediationSummary(BaseModel):
     backup_id: int | None = None
 
 
+class IncidentImpact(BaseModel):
+    """Current blast radius of an open, service-affecting incident - see
+    app.impact. customers_down counts CPE that has actually lost service
+    (its primary is cut off from the backbone, or the CPE itself is down);
+    the rest of customer_count is degraded/at risk only."""
+
+    level: str  # "outage" | "degraded"
+    primary_router_ids: list[int]
+    customer_count: int
+    customers_down: int
+
+
+class IncidentImpactDetail(IncidentImpact):
+    # Every router in the blast radius (primaries + customers) - only on
+    # GET /api/incidents/{id}/impact, for the map highlight.
+    router_ids: list[int]
+
+
+class FaultPoint(BaseModel):
+    kind: str  # "repeater" | "router"
+    label: str  # "R3", or the router's hostname at either end of the run
+    repeater_index: int | None = None
+    km_from_a: float
+    latitude: float
+    longitude: float
+
+
+class FaultLocation(BaseModel):
+    """Which span of a peering's fiber run a fault is in - see
+    app.fault_location."""
+
+    peering_id: int
+    router_a: str
+    router_b: str
+    distance_km: float | None = None
+    repeater_count: int
+    segment_index: int
+    segment_count: int
+    segment_length_km: float
+    start: FaultPoint
+    end: FaultPoint
+    repeaters_to_check: list[str]
+
+
 class IncidentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -101,8 +149,23 @@ class IncidentOut(BaseModel):
     closed_at: datetime | None = None
     trap_count: int
     description: str | None = None
-    resolved_manually: bool = False
     remediation: RemediationSummary | None = None
+    # Workflow - see models.IncidentStage and app.incidents.service.
+    stage: IncidentStage | None = None
+    stage_changed_at: datetime | None = None
+    severity: str | None = None
+    priority: str | None = None
+    owner_user_id: int | None = None
+    owner_username: str | None = None
+    acknowledged_at: datetime | None = None
+    resolved_by: str | None = None
+    resolution_reason: ResolutionReason | None = None
+    resolution_note: str | None = None
+    # Lets the UI file a live update under the right list without looking
+    # the router up first.
+    router_type: RouterType | None = None
+    # Open incidents currently suppressed as symptoms of this one.
+    symptom_count: int = 0
     # Common-Alarm-Model-style layer + topology-based root-cause linkage -
     # see app.correlation. peering_id is set only for L1 incidents that
     # stem from a specific fiber link (app.fiber_faults); root_cause_
@@ -111,9 +174,20 @@ class IncidentOut(BaseModel):
     layer: AlarmLayer
     peering_id: int | None = None
     root_cause_incident_id: int | None = None
+    # None for resolved and non-service-affecting incidents - see app.impact.
+    impact: IncidentImpact | None = None
+    # Fiber cuts only: the faulty span and the repeaters bounding it.
+    fault_segment_index: int | None = None
+    fault_location: FaultLocation | None = None
 
 
-class BulkResolveIn(BaseModel):
+class ResolveIn(BaseModel):
+    # One of models.USER_RESOLUTION_REASONS.
+    reason: ResolutionReason
+    note: str | None = None
+
+
+class BulkResolveIn(ResolveIn):
     incident_ids: list[int]
 
 
@@ -267,3 +341,68 @@ class StatsSummary(BaseModel):
     routers_flapping: int
     open_incidents: int
     incidents_by_type: dict[str, int]
+    # Distinct customer routers inside the blast radius of any open incident
+    # (see app.impact), and how many of those have actually lost service.
+    customers_impacted: int = 0
+    customers_down: int = 0
+    # Fleet-wide open incidents waiting for someone to pick them up.
+    incidents_in_triage: int = 0
+
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+    otp_code: str | None = None
+
+
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    username: str
+    role: UserRole
+    otp_enabled: bool = False
+    created_at: datetime | None = None
+
+    @classmethod
+    def from_user(cls, user) -> "UserOut":
+        return cls(
+            id=user.id, username=user.username, role=user.role, otp_enabled=bool(user.otp_secret), created_at=user.created_at
+        )
+
+
+class LoginOut(BaseModel):
+    token: str
+    user: UserOut
+
+
+class UserCreateIn(BaseModel):
+    username: str
+    password: str
+    role: UserRole = UserRole.VIEWER
+
+
+class UserUpdateIn(BaseModel):
+    role: UserRole | None = None
+    password: str | None = None
+    # Turns off two-factor auth for someone who lost their authenticator.
+    reset_otp: bool = False
+
+
+class PasswordChangeIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class OtpSetupOut(BaseModel):
+    secret: str
+    otpauth_uri: str
+
+
+class OtpEnableIn(BaseModel):
+    secret: str
+    code: str
+
+
+class OtpDisableIn(BaseModel):
+    code: str

@@ -97,6 +97,16 @@ header.topbar h1 {
   font-size: 0.85rem;
 }
 
+.role-tag {
+  margin-left: 0.3rem;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid #262f45;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
 .icon-button {
   flex-shrink: 0;
   margin-left: 1rem;
@@ -157,7 +167,8 @@ header.topbar h1 {
 }
 
 .settings-card {
-  width: min(460px, 92vw);
+  /* Wide enough for the Users table's role column plus its action buttons. */
+  width: min(580px, 92vw);
 }
 
 .settings-card h3 {
@@ -210,6 +221,11 @@ header.topbar h1 {
   justify-content: flex-end;
 }
 
+.users-table select {
+  padding: 0.25rem 0.4rem;
+  font-size: 0.78rem;
+}
+
 .users-table-actions button {
   padding: 0.3rem 0.5rem;
   font-size: 0.75rem;
@@ -224,6 +240,24 @@ header.topbar h1 {
   color: #9aa4bf;
   font-size: 0.85rem;
   line-height: 1.4;
+}
+
+.rate-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+}
+
+.rate-slider label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+}
+
+.rate-slider input[type="range"] {
+  width: 100%;
+  accent-color: #a855f7;
 }
 
 .otp-setup {
@@ -293,6 +327,18 @@ table {
   min-width: 100%;
 }
 
+/* Free-text cells inside a max-content table: wrap instead of widening the
+   whole table (fiber-fault descriptions/analyses run long). */
+.wrap-cell {
+  max-width: 480px;
+  white-space: normal;
+}
+
+.wrap-block {
+  max-width: min(1100px, 80vw);
+  white-space: normal;
+}
+
 th, td {
   text-align: left;
   padding: 0.5rem 0.75rem;
@@ -315,6 +361,25 @@ tr:hover td {
   font-size: 0.72rem;
   font-weight: 600;
   text-transform: uppercase;
+}
+
+.region-row td {
+  background: #121829;
+  cursor: pointer;
+  user-select: none;
+}
+
+.region-caret {
+  display: inline-block;
+  width: 1.2rem;
+  color: #9aa4bf;
+  font-size: 0.7rem;
+}
+
+.region-meta {
+  margin-left: 0.6rem;
+  color: #9aa4bf;
+  font-size: 0.8rem;
 }
 
 .badge.up { background: #1b3d2b; color: #4ade80; }
@@ -605,5 +670,103 @@ button:not(:disabled):hover {
      focused, which it does for any font-size under 16px. */
   input, select, textarea {
     font-size: 16px;
+  }
+}
+
+/* Human Review board - one column per workflow stage a person acts on
+   (see components/HumanReview.jsx). */
+.board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.board-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 8rem;
+  max-height: 60vh;
+  background: #121829;
+  border: 1px solid #262f45;
+  border-radius: 10px;
+}
+
+.board-column-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid #262f45;
+}
+
+.board-column-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  overflow-y: auto;
+}
+
+.incident-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.55rem 0.65rem;
+  background: #161c2c;
+  border: 1px solid #262f45;
+  border-left-width: 3px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.incident-card:hover {
+  border-color: #3b4766;
+}
+
+.incident-card.selected {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 1px #60a5fa;
+}
+
+.incident-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.prio {
+  padding: 0 0.35rem;
+  border: 1px solid;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.muted {
+  color: #9aa4bf;
+}
+
+.review-detail {
+  margin-top: 1rem;
+  padding: 1rem 1.1rem;
+  background: #0f1420;
+  border: 1px solid #262f45;
+  border-radius: 10px;
+  font-size: 0.85rem;
+}
+
+.review-section {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid #262f45;
+}
+
+@media (max-width: 900px) {
+  .board {
+    grid-template-columns: 1fr;
+  }
+
+  .board-column {
+    max-height: 45vh;
   }
 }

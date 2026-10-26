@@ -29,8 +29,8 @@ from app.bundles import ISIS_PROCESS_TAG, bundle_and_member_names, isis_net
 from app.models import (
     BgpPeering,
     Incident,
-    IncidentStatus,
     IncidentType,
+    InterfaceBundle,
     RemediationAction,
     RemediationActionType,
     RemediationStatus,
@@ -153,8 +153,16 @@ def _simulated_config_snapshot(db: Session, router: Router, revision: int) -> st
     ]
 
     peers = _bgp_peers_sorted(db, router)
+    bundles = {
+        b.peering_id: b for b in db.query(InterfaceBundle).filter(InterfaceBundle.router_id == router.id).all()
+    }
     for i, (peer, peering) in enumerate(peers):
+        # The stored bundle wins - a link added after the initial seed may
+        # not sit at its sorted-peer position (see app.bundles).
         bundle_name, member_names = bundle_and_member_names(i)
+        if peering.id in bundles:
+            bundle_name = bundles[peering.id].name
+            member_names = [m.name for m in bundles[peering.id].members]
         fiber_note = ""
         if peering.distance_km is not None:
             fiber_note = f" — {peering.distance_km:.0f}km SMF, {peering.repeater_count} repeater(s)"
@@ -172,7 +180,7 @@ def _simulated_config_snapshot(db: Session, router: Router, revision: int) -> st
             lines += [
                 f"interface {member_name}",
                 f" description member of {bundle_name} (BGP peer {peer.hostname})",
-                f" channel-group {i + 1} mode active",
+                f" channel-group {bundle_name.removeprefix('Port-channel')} mode active",
                 " bandwidth 40000000",
                 " no shutdown",
                 "!",
@@ -221,10 +229,12 @@ def backup_router_config(db: Session, router: Router, incident: Incident, reason
 
 
 def maybe_remediate(db: Session, router: Router, incident: Incident) -> dict | None:
-    """Runs the auto-heal playbook for a newly-opened incident: backup
-    first, then act (or explicitly decline to act). Returns a
-    JSON-serializable summary for the WebSocket broadcast, or None if this
-    incident type isn't auto-heal eligible at all."""
+    """Runs the auto-heal playbook for an incident whose settle window has
+    passed (see app.incidents.service.sweep): backup first, then act (or
+    explicitly decline to act). Returns a summary of the action, or None if
+    this incident type isn't auto-heal eligible at all. Doesn't commit -
+    the caller decides the incident's next stage from the result and
+    commits both together."""
 
     if incident.incident_type not in AUTO_HEAL_ELIGIBLE_TYPES:
         return None
@@ -274,8 +284,6 @@ def maybe_remediate(db: Session, router: Router, incident: Incident) -> dict | N
 
     db.add(action)
     db.flush()
-    db.commit()
-    db.refresh(action)
 
     return {
         "id": action.id,
@@ -286,21 +294,3 @@ def maybe_remediate(db: Session, router: Router, incident: Incident) -> dict | N
         "status": action.status.value,
         "summary": action.summary,
     }
-
-
-def needs_attention_router_ids(db: Session, router_ids: list[int] | None = None) -> set[int]:
-    """Router ids whose auto-heal attempt did NOT fix the problem: they
-    still have an open incident whose (one-shot) remediation action came
-    back FAILED. Since a router's status flips back to `up` (and its
-    LINK_DOWN/LINK_FLAP incident resolves) independently of whether the
-    remediation succeeded, this naturally clears itself once the router
-    actually recovers - no separate "un-mark" step needed."""
-    query = (
-        db.query(Incident.router_id)
-        .join(RemediationAction, RemediationAction.incident_id == Incident.id)
-        .filter(Incident.status == IncidentStatus.OPEN, RemediationAction.status == RemediationStatus.FAILED)
-        .distinct()
-    )
-    if router_ids is not None:
-        query = query.filter(Incident.router_id.in_(router_ids))
-    return {row[0] for row in query.all()}

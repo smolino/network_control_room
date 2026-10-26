@@ -10,6 +10,7 @@ default in the "send to team" dropdown, not to hard-block sending to the
 other kind.
 """
 
+from app.fault_location import locate_fault
 from app.models import Incident, IncidentType, Router, TeamKind
 
 # incident_type -> (team_kind, "what happened" template, "what to do" template)
@@ -127,6 +128,17 @@ def generate_analysis(incident: Incident, router: Router) -> dict:
     description = summary_tmpl.format(**fmt_kwargs)
     solution = solution_tmpl.format(**fmt_kwargs)
 
+    # A fiber cut whose alarm reported the span (see app.fault_location)
+    # gets a dispatch the field crew can act on directly instead of the
+    # generic "measure the optic" advice.
+    location = (
+        locate_fault(incident.peering, incident.fault_segment_index)
+        if incident.peering is not None and incident.fault_segment_index is not None
+        else None
+    )
+    if location:
+        description, solution = _fiber_fault_guidance(location)
+
     return {
         "incident_id": incident.id,
         "description": description,
@@ -134,3 +146,34 @@ def generate_analysis(incident: Incident, router: Router) -> dict:
         "recommended_team_kind": team_kind,
         "subject": f"[NCR] {incident.incident_type.value} on {router.hostname} (incident #{incident.id}) needs review",
     }
+
+
+def _fiber_fault_guidance(location: dict) -> tuple[str, str]:
+    start, end = location["start"], location["end"]
+
+    def where(p: dict) -> str:
+        return f"{p['label']} (km {p['km_from_a']} from {location['router_a']}, {p['latitude']}, {p['longitude']})"
+
+    description = (
+        f"Loss of optical signal on the fiber run {location['router_a']} <-> {location['router_b']}"
+        f" ({location['distance_km']} km, {location['repeater_count']} repeaters). The fault is isolated"
+        f" to span {location['segment_index'] + 1} of {location['segment_count']}, between {where(start)} and"
+        f" {where(end)} - a {location['segment_length_km']} km stretch. The BGP session is still carried"
+        " by the bundle's other member link(s) or rerouted, so this is a repair, not an outage."
+    )
+    checks = location["repeaters_to_check"]
+    if checks:
+        targets = " and ".join(checks)
+        solution = (
+            f"Dispatch the fiber crew to the {start['label']}-{end['label']} span. Check {targets} first:"
+            " confirm power and the alarm/OTDR readings at each site, and replace the repeater that"
+            " shows no output (upstream) or no input (downstream). If both repeaters test good, run an"
+            " OTDR trace from either end to locate the break in the fiber itself and splice it."
+        )
+    else:
+        solution = (
+            f"The fault is on the span between {start['label']} and {end['label']}, with no repeater in"
+            " between - check the line card optics at the router end, then OTDR the span to locate the"
+            " break."
+        )
+    return description, solution

@@ -7,7 +7,11 @@ app.snmp.classifier.classify_and_store - exactly what used to run
 synchronously in the trap-listener's request path before this pipeline
 existed: router lookup (enrichment), TrapEvent/Incident persistence (the
 alarm store), flap/bundle/BGP-peering updates, and Neo4j-backed root-cause
-correlation (app.correlation). The final WS-ready payload is published to
+correlation (app.correlation). Between polls it also runs the incident
+workflow's sweeper (app.incidents.service.sweep) - auto-heal once a new
+incident's settle window has passed, and escalation of fixes no clear trap
+ever confirmed - since this is the single process that owns incident
+writes from the pipeline. The final WS-ready payloads are published to
 `incident-events` for `backend`'s relay thread to broadcast - this service
 never touches the WebSocket directly, since it isn't the process holding
 those connections.
@@ -19,16 +23,22 @@ not inside the `backend` FastAPI process.
 import json
 import logging
 import time
+from datetime import datetime, timezone
 
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.errors import NoBrokersAvailable
 
 from app.config import settings
-from app.db import SessionLocal
+from app.db import SessionLocal, add_missing_columns
+from app.incidents.service import sweep
 from app.snmp.classifier import classify_and_store
 from app.streaming.topics import INCIDENT_EVENTS, NORM_ALARMS
 
 logger = logging.getLogger(__name__)
+
+# The settle window is tens of seconds, so checking every couple of seconds
+# is plenty - and keeps sweep queries off the hot path when traps pour in.
+SWEEP_INTERVAL_SECONDS = 2
 
 
 def _connect() -> tuple[KafkaConsumer, KafkaProducer]:
@@ -71,21 +81,44 @@ def _process(db, message: dict) -> dict | None:
     )
 
 
+def _sweep(producer: KafkaProducer) -> None:
+    db = SessionLocal()
+    try:
+        event = sweep(db, datetime.now(timezone.utc))
+    except Exception:
+        db.rollback()
+        logger.exception("Incident sweep failed")
+        event = None
+    finally:
+        db.close()
+    if event:
+        producer.send(INCIDENT_EVENTS, event)
+
+
 def main() -> None:
+    add_missing_columns()
     consumer, producer = _connect()
     logger.info("correlator: consuming %s, producing %s", NORM_ALARMS, INCIDENT_EVENTS)
-    for record in consumer:
-        db = SessionLocal()
-        try:
-            result = _process(db, record.value)
-        except Exception:
-            db.rollback()
-            logger.exception("Failed to process message %r", record.value)
-            result = None
-        finally:
-            db.close()
-        if result:
-            producer.send(INCIDENT_EVENTS, result)
+    last_sweep = 0.0
+    while True:
+        # poll(), not iteration, so the loop comes back at least once a
+        # second to sweep even when no alarms are arriving.
+        for records in consumer.poll(timeout_ms=1000).values():
+            for record in records:
+                db = SessionLocal()
+                try:
+                    result = _process(db, record.value)
+                except Exception:
+                    db.rollback()
+                    logger.exception("Failed to process message %r", record.value)
+                    result = None
+                finally:
+                    db.close()
+                if result:
+                    producer.send(INCIDENT_EVENTS, result)
+        if time.monotonic() - last_sweep >= SWEEP_INTERVAL_SECONDS:
+            _sweep(producer)
+            last_sweep = time.monotonic()
 
 
 if __name__ == "__main__":

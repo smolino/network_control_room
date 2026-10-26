@@ -1,6 +1,7 @@
+import logging
 import os
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.config import settings
@@ -23,6 +24,8 @@ engine = create_engine(settings.database_url, connect_args=connect_args, pool_pr
 SessionLocal = sessionmaker(autocommit=False, autoflush=True, bind=engine)
 Base = declarative_base()
 
+logger = logging.getLogger(__name__)
+
 
 def get_db():
     db = SessionLocal()
@@ -44,7 +47,35 @@ def init_db():
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
 
     Base.metadata.create_all(bind=engine)
+    add_missing_columns()
     _seed_default_router_models()
+
+
+def add_missing_columns() -> None:
+    """create_all() only creates missing *tables* - this project has no
+    migration tool, so a nullable column added to an existing model is
+    added here instead. Non-nullable additions still need a manual
+    migration and are only logged. Also called by the correlator (see
+    app.streaming.correlator), which writes incidents and may start before
+    the backend has run this."""
+    from app import models  # noqa: F401 - ensure models are registered
+
+    inspector = inspect(engine)
+    if_not_exists = "IF NOT EXISTS " if settings.is_postgres else ""
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not inspector.has_table(table.name):
+                continue
+            existing = {c["name"] for c in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in existing:
+                    continue
+                if not column.nullable:
+                    logger.warning("Column %s.%s is missing and not nullable - add it manually", table.name, column.name)
+                    continue
+                column_type = column.type.compile(dialect=engine.dialect)
+                conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {if_not_exists}{column.name} {column_type}"))
+                logger.info("Added missing column %s.%s", table.name, column.name)
 
 
 # Starter catalog for the Add Fleet form's Vendor/Model dropdowns (see
