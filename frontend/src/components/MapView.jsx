@@ -53,6 +53,9 @@ const REROUTE_DASH_LENGTH = 18; // sum of REROUTE_DASH - keeps the offset wrap s
 const LINK_SELECT_COLOR = "#a855f7";
 
 const MARKER_STROKE = "#0b0f1a";
+// L1 repeater dots - purple so they stand out from the routers and links.
+const REPEATER_FILL = "#a855f7";
+const REPEATER_STROKE = "#581c87";
 const ALERT_STROKE = "#f97316";
 // Dashed ring for a router that's an endpoint of a peering with an open L1
 // (fiber) incident, but has nothing of its own in triage - distinguishes
@@ -706,11 +709,11 @@ export default function MapView({
                     <CircleMarker
                       key={`repeater-${p.id}-${ri}-${ci}`}
                       center={copy[0]}
-                      radius={2}
+                      radius={3}
                       pathOptions={{
-                        color: MARKER_STROKE,
-                        weight: showRepeaters ? 0.5 : 0,
-                        fillColor: "#ffffff",
+                        color: REPEATER_STROKE,
+                        weight: showRepeaters ? 1 : 0,
+                        fillColor: REPEATER_FILL,
                         fillOpacity: showRepeaters ? 0.9 : 0.08,
                         opacity: showRepeaters ? 1 : 0.08,
                       }}
@@ -849,7 +852,7 @@ export default function MapView({
                 key={`fault-point-${pt.label}`}
                 center={[pt.latitude, pt.longitude]}
                 radius={pt.kind === "repeater" ? 7 : 10}
-                pathOptions={{ color: ALERT_STROKE, weight: 3, fill: pt.kind === "repeater", fillColor: "#ffffff", fillOpacity: 1 }}
+                pathOptions={{ color: ALERT_STROKE, weight: 3, fill: pt.kind === "repeater", fillColor: REPEATER_FILL, fillOpacity: 1 }}
               >
                 <Tooltip permanent direction="top" offset={[0, -8]}>
                   {pt.label} · km {pt.km_from_a}
