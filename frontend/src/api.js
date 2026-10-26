@@ -257,6 +257,12 @@ export function setSimulationRates(rates) {
   return postJSON("/simulation/rates", rates);
 }
 
+// Admin-only: with auto-heal off, no playbooks run and nothing resolves on
+// its own - every incident waits for an engineer.
+export function setAutoHeal(enabled) {
+  return postJSON("/simulation/auto-heal", { enabled });
+}
+
 // Admin-only: deletes every router, BGP link and their whole history, and
 // stops the simulator re-seeding its demo fleet - see
 // backend/app/api/simulation.py:reset_fleet.

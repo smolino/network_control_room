@@ -522,6 +522,14 @@ traps against an already-open incident don't re-trigger it):
    skips auto-heal entirely, even if its type would otherwise be
    actionable.
 
+Admins can switch auto-heal off with the **Enable auto-heal** checkbox under
+**Settings → Simulation** (`POST /api/simulation/auto-heal`, saved in the
+`app_settings` table so it survives restarts). While it's off, no playbook
+runs and nothing gets resolved automatically: a settled incident goes
+straight to **Triage**, clear traps (linkUp, bgpEstablished, ...) no longer
+close incidents, and every incident stays open until an engineer resolves
+it.
+
 Every backup and every action (success, failure, or skip, with a log) is
 persisted and shown in the UI: the **Incidents** tab has an "Auto-heal"
 column (click a badge for the full log), and each router's detail panel

@@ -12,6 +12,7 @@ import {
   fetchUsers,
   resetFleet,
   resolveAllOpenIncidents,
+  setAutoHeal,
   setSimulationEnabled,
   setSimulationRates,
   startOtpSetup,
@@ -645,9 +646,49 @@ function SimulationTab({ onFleetReset }) {
         </>
       )}
 
+      {rates && <AutoHealToggle initial={rates.auto_heal} canEdit={isAdmin} />}
       {rates && <IncidentRates initial={rates} canEdit={isAdmin} />}
       {isAdmin && <ResetIncidents />}
       {isAdmin && <DeleteFleet onFleetReset={onFleetReset} />}
+    </>
+  );
+}
+
+// Turns the auto-heal playbooks (and automatic resolution by clear traps) on
+// or off - see backend/app/incidents/service.py:auto_heal_enabled.
+function AutoHealToggle({ initial, canEdit }) {
+  const [enabled, setEnabled] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const toggle = async (e) => {
+    const next = e.target.checked;
+    setSaving(true);
+    setError("");
+    try {
+      const s = await setAutoHeal(next);
+      setEnabled(s.auto_heal);
+    } catch (err) {
+      setError(`Couldn't update auto-heal: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <h3>Auto-heal</h3>
+      {error && <div className="login-error">{error}</div>}
+      <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: canEdit ? "pointer" : "default" }}>
+        <input type="checkbox" checked={enabled} disabled={!canEdit || saving} onChange={toggle} />
+        Enable auto-heal
+      </label>
+      <p className="settings-hint">
+        {enabled
+          ? "New incidents get an automatic playbook (config backup + fix) once they settle, and resolve on their own when the device reports the condition cleared."
+          : "No playbooks run and nothing resolves on its own - every incident goes to Human Review and stays open until an engineer resolves it."}
+      </p>
+      {!canEdit && <p className="settings-hint">Only admins can change auto-heal.</p>}
     </>
   );
 }

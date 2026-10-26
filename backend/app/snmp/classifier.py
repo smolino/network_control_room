@@ -140,8 +140,13 @@ def classify_and_store(
         # peering - peering-scoped, not router+interface-scoped, since a
         # fiber cut isn't attached to any one interface. Dropped without a
         # broadcast if it's already resolved or the peering vanished, same
-        # as any other event that arrives too late to matter.
-        if peering_id is None or not incident_service.clear_peering(db, peering_id, IncidentType.OPTICAL_ALARM, now):
+        # as any other event that arrives too late to matter. With auto-heal
+        # off nothing is resolved, but the alarm is still kept so engineers
+        # can see the signal came back.
+        if peering_id is None or (
+            not incident_service.clear_peering(db, peering_id, IncidentType.OPTICAL_ALARM, now)
+            and incident_service.auto_heal_enabled(db)
+        ):
             db.rollback()
             return None
     elif trap_oid == BGP_ESTABLISHED_OID:

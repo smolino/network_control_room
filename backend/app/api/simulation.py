@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.auth import require_admin
 from app.config import settings
 from app.db import SessionLocal, get_db
+from app.incidents.service import AUTO_HEAL, auto_heal_enabled
 from app.models import (
     AppSetting,
     BgpPeering,
@@ -57,11 +58,18 @@ class SimulationStatusOut(SimulationStatus):
     # Average fiber cuts per hour at l1_rate 1, for the Settings slider's
     # estimate.
     l1_base_per_hour: float = 0.0
+    # Off: no playbooks and no automatic resolution - see
+    # app.incidents.service.auto_heal_enabled.
+    auto_heal: bool = True
 
 
 class SimulationRates(BaseModel):
     l1_rate: float | None = Field(default=None, ge=0, le=MAX_RATE)
     l3_rate: float | None = Field(default=None, ge=0, le=MAX_RATE)
+
+
+class AutoHeal(BaseModel):
+    enabled: bool
 
 
 class FleetResetOut(BaseModel):
@@ -104,6 +112,7 @@ def _status(db: Session) -> SimulationStatusOut:
         l1_rate=_rate(db, L1_RATE),
         l3_rate=_rate(db, L3_RATE),
         l1_base_per_hour=3600 / mean_interval if settings.fiber_fault_simulation and mean_interval > 0 else 0.0,
+        auto_heal=auto_heal_enabled(db),
     )
 
 
@@ -130,6 +139,15 @@ def set_rates(payload: SimulationRates, db: Session = Depends(get_db)):
         db.add(setting)
     db.commit()
     _state["l1_rate"] = _rate(db, L1_RATE)
+    return _status(db)
+
+
+@router.post("/auto-heal", response_model=SimulationStatusOut, dependencies=[Depends(require_admin)])
+def set_auto_heal(payload: AutoHeal, db: Session = Depends(get_db)):
+    setting = db.get(AppSetting, AUTO_HEAL) or AppSetting(key=AUTO_HEAL)
+    setting.value = "true" if payload.enabled else "false"
+    db.add(setting)
+    db.commit()
     return _status(db)
 
 
