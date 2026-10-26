@@ -251,6 +251,12 @@ export function setSimulationEnabled(enabled) {
   return postJSON("/simulation/status", { enabled });
 }
 
+// Admin-only: how often simulated L1 (fiber cut) and L3 incidents happen, as
+// a multiplier of the default pace - pass either or both.
+export function setSimulationRates(rates) {
+  return postJSON("/simulation/rates", rates);
+}
+
 // Admin-only: deletes every router, BGP link and their whole history, and
 // stops the simulator re-seeding its demo fleet - see
 // backend/app/api/simulation.py:reset_fleet.

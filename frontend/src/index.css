@@ -242,6 +242,24 @@ header.topbar h1 {
   line-height: 1.4;
 }
 
+.rate-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+}
+
+.rate-slider label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+}
+
+.rate-slider input[type="range"] {
+  width: 100%;
+  accent-color: #a855f7;
+}
+
 .otp-setup {
   display: flex;
   flex-direction: column;

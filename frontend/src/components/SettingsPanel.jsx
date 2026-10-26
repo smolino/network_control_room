@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import {
   changeOwnPassword,
@@ -13,6 +13,7 @@ import {
   resetFleet,
   resolveAllOpenIncidents,
   setSimulationEnabled,
+  setSimulationRates,
   startOtpSetup,
   updateTeam,
   updateUser,
@@ -592,12 +593,16 @@ function TeamsTab({ teams, onChanged }) {
 function SimulationTab({ onFleetReset }) {
   const isAdmin = useHasRole("admin");
   const [enabled, setEnabled] = useState(null);
+  const [rates, setRates] = useState(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     fetchSimulationStatus()
-      .then((s) => setEnabled(s.enabled))
+      .then((s) => {
+        setEnabled(s.enabled);
+        setRates(s);
+      })
       .catch((err) => setError(`Couldn't load simulation status: ${err.message}`));
   }, []);
 
@@ -640,8 +645,101 @@ function SimulationTab({ onFleetReset }) {
         </>
       )}
 
+      {rates && <IncidentRates initial={rates} canEdit={isAdmin} />}
       {isAdmin && <ResetIncidents />}
       {isAdmin && <DeleteFleet onFleetReset={onFleetReset} />}
+    </>
+  );
+}
+
+const RATE_MAX = 5;
+const RATE_STEP = 0.25;
+const RATE_SAVE_DELAY_MS = 400;
+
+function rateLabel(rate) {
+  if (rate === 0) return "off";
+  if (rate === 1) return "×1 (default)";
+  return `×${rate}`;
+}
+
+// Sliders for how often simulated incidents happen, per layer - see
+// backend/app/api/simulation.py:set_rates. Saves shortly after the slider
+// stops moving rather than on every step.
+function IncidentRates({ initial, canEdit }) {
+  const [l1, setL1] = useState(initial.l1_rate);
+  const [l3, setL3] = useState(initial.l3_rate);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const saveTimer = useRef(null);
+
+  useEffect(() => () => clearTimeout(saveTimer.current), []);
+
+  const change = (setter, key) => (e) => {
+    const value = Number(e.target.value);
+    setter(value);
+    setSaved(false);
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      setError("");
+      try {
+        await setSimulationRates({ [key]: value });
+        setSaved(true);
+      } catch (err) {
+        setError(`Couldn't save the incident rate: ${err.message}`);
+      }
+    }, RATE_SAVE_DELAY_MS);
+  };
+
+  const l1PerHour = initial.l1_base_per_hour * l1;
+
+  return (
+    <>
+      <h3>Incident rate</h3>
+      <p className="settings-hint">
+        How often the simulation creates incidents, compared with its default pace. Changes apply within a few
+        seconds and are kept across restarts.
+      </p>
+      {error && <div className="login-error">{error}</div>}
+      <div className="rate-slider">
+        <label htmlFor="l1-rate">
+          L1 physical (fibre cuts) <strong>{rateLabel(l1)}</strong>
+        </label>
+        <input
+          id="l1-rate"
+          type="range"
+          min={0}
+          max={RATE_MAX}
+          step={RATE_STEP}
+          value={l1}
+          disabled={!canEdit}
+          onChange={change(setL1, "l1_rate")}
+        />
+        <span className="settings-hint">
+          {initial.l1_base_per_hour > 0
+            ? `About ${l1PerHour.toFixed(1)} fibre cuts an hour.`
+            : "The fibre-cut generator is turned off on this server (FIBER_FAULT_SIMULATION)."}
+        </span>
+      </div>
+      <div className="rate-slider">
+        <label htmlFor="l3-rate">
+          L3 routing &amp; device events <strong>{rateLabel(l3)}</strong>
+        </label>
+        <input
+          id="l3-rate"
+          type="range"
+          min={0}
+          max={RATE_MAX}
+          step={RATE_STEP}
+          value={l3}
+          disabled={!canEdit}
+          onChange={change(setL3, "l3_rate")}
+        />
+        <span className="settings-hint">
+          Link flaps, BGP/BFD/IS-IS drops, bundle failures and CPU/temperature/power alarms.
+        </span>
+      </div>
+      {saved && <div className="form-success">Saved.</div>}
+      {!canEdit && <p className="settings-hint">Only admins can change the incident rate.</p>}
     </>
   );
 }

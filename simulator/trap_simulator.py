@@ -108,6 +108,10 @@ FLEET_REFRESH_SECONDS = float(os.getenv("FLEET_REFRESH_SECONDS", "120"))
 # poll lands; simulation_control_loop corrects this from the backend's
 # actual flag within SIMULATION_POLL_SECONDS.
 _simulation_enabled = True
+# Settings > Simulation's L3 slider: multiplies how often every event loop
+# below fires (1 = default pace, 0 = no events) - see rated_sleep. Also
+# polled by simulation_control_loop.
+_l3_rate = 1.0
 
 # Bundle (Port-channel) members per BGP peering link - see
 # backend/app/bundles.py, which independently derives the identical
@@ -302,15 +306,20 @@ async def simulation_control_loop() -> None:
     cancel or restart any of their asyncio tasks. Uses requests (already a
     dependency for seeding) off the event loop via to_thread so a slow poll
     can't stall trap sending."""
-    global _simulation_enabled
+    global _simulation_enabled, _l3_rate
     while True:
         try:
             resp = await asyncio.to_thread(requests.get, f"{BACKEND_API_URL}/api/simulation/status", timeout=5)
             resp.raise_for_status()
-            enabled = resp.json()["enabled"]
+            status = resp.json()
+            enabled = status["enabled"]
             if enabled != _simulation_enabled:
                 logger.info("Simulation %s", "resumed" if enabled else "paused")
             _simulation_enabled = enabled
+            l3_rate = float(status.get("l3_rate", 1.0))
+            if l3_rate != _l3_rate:
+                logger.info("L3 event rate set to x%g", l3_rate)
+            _l3_rate = l3_rate
         except requests.RequestException as exc:
             logger.warning("Couldn't reach backend for simulation status: %s", exc)
         await asyncio.sleep(SIMULATION_POLL_SECONDS)
@@ -354,13 +363,14 @@ async def send_trap(
 async def flap_loop(engine, target, router: dict, interfaces: list[str]) -> None:
     interface = random.choice(interfaces) if interfaces else random.choice(INTERFACES)
     while True:
+        await wait_while_l3_off()
         for _ in range(random.randint(4, 6)):
             await send_trap(engine, target, LINK_DOWN_OID, router, interface)
             await asyncio.sleep(random.uniform(1, 3))
             await send_trap(engine, target, LINK_UP_OID, router, interface)
             await asyncio.sleep(random.uniform(1, 3))
         # quiet period between flap bursts
-        await asyncio.sleep(random.uniform(FLAP_QUIET_MIN_SECONDS, FLAP_QUIET_MAX_SECONDS))
+        await rated_sleep(random.uniform(FLAP_QUIET_MIN_SECONDS, FLAP_QUIET_MAX_SECONDS))
 
 
 async def bundle_flap_loop(engine, target, router: dict, peer_ip: str, bundle_info: dict) -> None:
@@ -376,22 +386,45 @@ async def bundle_flap_loop(engine, target, router: dict, peer_ip: str, bundle_in
         return
     member = random.choice(members)
     while True:
+        await wait_while_l3_off()
         for _ in range(random.randint(4, 6)):
             await send_trap(engine, target, ISIS_ADJACENCY_DOWN_OID, router, interface=member, bgp_peer_ip=peer_ip)
             await asyncio.sleep(random.uniform(1, 3))
             await send_trap(engine, target, ISIS_ADJACENCY_UP_OID, router, interface=member, bgp_peer_ip=peer_ip)
             await asyncio.sleep(random.uniform(1, 3))
         # quiet period between flap bursts
-        await asyncio.sleep(random.uniform(FLAP_QUIET_MIN_SECONDS, FLAP_QUIET_MAX_SECONDS))
+        await rated_sleep(random.uniform(FLAP_QUIET_MIN_SECONDS, FLAP_QUIET_MAX_SECONDS))
 
 
 async def down_router_loop(engine, target, router: dict, interfaces: list[str]) -> None:
     interface = random.choice(interfaces) if interfaces else random.choice(INTERFACES)
     while True:
+        await wait_while_l3_off()
         await send_trap(engine, target, LINK_DOWN_OID, router, interface)
         await asyncio.sleep(random.uniform(120, 300))
         await send_trap(engine, target, LINK_UP_OID, router, interface)
-        await asyncio.sleep(random.uniform(300, 600))
+        await rated_sleep(random.uniform(300, 600))
+
+
+async def rated_sleep(seconds: float) -> None:
+    """Sleeps `seconds` of default-pace time, sped up or slowed down by the
+    L3 rate - re-read every SIMULATION_POLL_SECONDS, so moving the slider
+    applies to waits already in progress. At rate 0 it never returns while
+    the rate stays 0, which is what stops the loop's events."""
+    remaining = seconds
+    while remaining > 0:
+        step = SIMULATION_POLL_SECONDS
+        if _l3_rate > 0 and remaining / _l3_rate < step:
+            step = remaining / _l3_rate
+        await asyncio.sleep(step)
+        remaining -= step * _l3_rate
+
+
+async def wait_while_l3_off() -> None:
+    """Holds a loop whose first event fires straight away on startup (the
+    chronic and scheduled ones) while the L3 rate is 0."""
+    while _l3_rate <= 0:
+        await asyncio.sleep(SIMULATION_POLL_SECONDS)
 
 
 def event_tick(tick_min: float, tick_max: float, per_router_interval: float, fleet_size: int) -> float:
@@ -419,7 +452,7 @@ def spawn(coro) -> None:
 
 async def random_event_loop(engine, target, fleet: Fleet) -> None:
     while True:
-        await asyncio.sleep(
+        await rated_sleep(
             event_tick(TICK_MIN_SECONDS, TICK_MAX_SECONDS, PRIMARY_EVENT_INTERVAL_SECONDS, len(fleet.primaries))
         )
         if not fleet.primaries:
@@ -503,6 +536,7 @@ async def scheduled_bgp_incident_loop(engine, target, fleet: Fleet) -> None:
     the bundle's own physical redundancy - see scheduled_bundle_failure_loop
     for the "transport actually gone" scenario."""
     while True:
+        await wait_while_l3_off()
         peer_adjacency, bgp_bundles = fleet.peer_adjacency, fleet.bgp_bundles
         candidates = [r for r in fleet.primaries if peer_adjacency.get(r["mgmt_ip"])]
         if candidates:
@@ -513,7 +547,7 @@ async def scheduled_bgp_incident_loop(engine, target, fleet: Fleet) -> None:
             await send_trap(engine, target, BGP_BACKWARD_TRANSITION_OID, router, interface=iface, bgp_peer_ip=peer_ip)
             await asyncio.sleep(random.uniform(10, 30))
             await send_trap(engine, target, BGP_ESTABLISHED_OID, router, interface=iface, bgp_peer_ip=peer_ip)
-        await asyncio.sleep(BGP_INCIDENT_INTERVAL_SECONDS)
+        await rated_sleep(BGP_INCIDENT_INTERVAL_SECONDS)
 
 
 async def scheduled_bundle_failure_loop(engine, target, fleet: Fleet) -> None:
@@ -526,6 +560,7 @@ async def scheduled_bundle_failure_loop(engine, target, fleet: Fleet) -> None:
     member but not when it's genuinely exhausted. Fires once on startup,
     then every interval after."""
     while True:
+        await wait_while_l3_off()
         peer_adjacency, bgp_bundles = fleet.peer_adjacency, fleet.bgp_bundles
         candidates = [r for r in fleet.primaries if peer_adjacency.get(r["mgmt_ip"])]
         if candidates:
@@ -545,7 +580,7 @@ async def scheduled_bundle_failure_loop(engine, target, fleet: Fleet) -> None:
                 for member in members:
                     await send_trap(engine, target, ISIS_ADJACENCY_UP_OID, router, interface=member, bgp_peer_ip=peer_ip)
                     await asyncio.sleep(random.uniform(5, 15))
-        await asyncio.sleep(BUNDLE_FAILURE_INTERVAL_SECONDS)
+        await rated_sleep(BUNDLE_FAILURE_INTERVAL_SECONDS)
 
 
 # A customer CPE is single-homed: it only ever has the one uplink port.
@@ -561,7 +596,7 @@ async def customer_event_loop(engine, target, fleet: Fleet) -> None:
     backbone-grade telemetry - and the uplink link-down/up blip stays the
     dominant event, matching a CPE's single physical port."""
     while True:
-        await asyncio.sleep(
+        await rated_sleep(
             event_tick(
                 CUSTOMER_TICK_MIN_SECONDS, CUSTOMER_TICK_MAX_SECONDS, CUSTOMER_EVENT_INTERVAL_SECONDS, len(fleet.customers)
             )
@@ -604,21 +639,27 @@ async def boot_sequence(engine, target, routers: list[dict], delay: float = 0.05
         await asyncio.sleep(delay)
 
 
-def demo_fleet_seeding_enabled() -> bool:
-    """False once an admin has used Settings > Simulation > "Delete entire
-    fleet" - from then on the map should only show what's been added
-    since, not come back with the demo fleet on every restart."""
+def read_initial_status() -> bool:
+    """Reads the backend's simulation settings once before anything starts.
+    Returns whether to seed the demo fleet - False once an admin has used
+    Settings > Simulation > "Delete entire fleet", since from then on the
+    map should only show what's been added since, not come back with the
+    demo fleet on every restart. Also picks up the L3 rate up front, so a
+    rate of 0 holds back even the loops that fire once on startup."""
+    global _l3_rate
     try:
         resp = requests.get(f"{BACKEND_API_URL}/api/simulation/status", timeout=10)
         resp.raise_for_status()
-        return resp.json().get("seed_demo_fleet", True)
+        status = resp.json()
+        _l3_rate = float(status.get("l3_rate", 1.0))
+        return status.get("seed_demo_fleet", True)
     except requests.RequestException as exc:
-        logger.warning("Couldn't read the demo-fleet seeding flag, seeding anyway: %s", exc)
+        logger.warning("Couldn't read the simulation settings, seeding the demo fleet anyway: %s", exc)
         return True
 
 
 async def main() -> None:
-    if demo_fleet_seeding_enabled():
+    if read_initial_status():
         routers = load_primary_routers()
         seed_routers(routers)
 

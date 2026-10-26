@@ -31,6 +31,7 @@ import logging
 import random
 
 from app.api.simulation import is_enabled as simulation_enabled
+from app.api.simulation import l1_rate
 from app.config import settings
 from app.db import SessionLocal
 from app.models import BgpPeering, BgpSessionStatus, InterfaceBundle
@@ -43,6 +44,10 @@ logger = logging.getLogger(__name__)
 FAULT_DURATION_SECONDS = settings.fiber_fault_duration_seconds
 FAULT_INTERVAL_MIN_SECONDS = settings.fiber_fault_interval_min_seconds
 FAULT_INTERVAL_MAX_SECONDS = settings.fiber_fault_interval_max_seconds
+# How often the wait between faults re-reads the Settings > Simulation L1
+# slider, so a change applies within seconds rather than after the current
+# (possibly long) wait.
+RATE_POLL_SECONDS = 2.0
 
 # peering_id -> segment_index (1-based: the fault sits between the
 # segment_index-th and (segment_index+1)-th repeater along that peering's
@@ -152,15 +157,30 @@ async def _run_one_fault(peering_id: int, segment_index: int) -> None:
     )
 
 
+async def _rated_wait(seconds: float) -> None:
+    """Waits `seconds` of default-pace time, sped up or slowed down by the
+    L1 rate - re-read every RATE_POLL_SECONDS, so moving the slider takes
+    effect on the wait already in progress."""
+    remaining = seconds
+    while remaining > 0:
+        step = RATE_POLL_SECONDS
+        rate = l1_rate()
+        if rate > 0 and remaining / rate < step:
+            step = remaining / rate
+        await asyncio.sleep(step)
+        remaining -= step * rate
+
+
 async def fiber_fault_loop() -> None:
     """Runs for the lifetime of the app: every FAULT_INTERVAL_MIN/MAX_SECONDS, knocks out one
     interior span of fiber on a random established peering long enough to
     have such a span (random country first, then a random link in it), then
     heals it exactly FAULT_DURATION_SECONDS later.
     Only started when FIBER_FAULT_SIMULATION is on (see app.main), and
-    pauses with the Settings > Simulation toggle like the trap simulator."""
+    pauses with the Settings > Simulation toggle like the trap simulator.
+    The wait between faults is divided by the L1 rate slider (0 = none)."""
     while True:
-        await asyncio.sleep(random.uniform(FAULT_INTERVAL_MIN_SECONDS, FAULT_INTERVAL_MAX_SECONDS))
+        await _rated_wait(random.uniform(FAULT_INTERVAL_MIN_SECONDS, FAULT_INTERVAL_MAX_SECONDS))
         if not simulation_enabled():
             continue
         db = SessionLocal()

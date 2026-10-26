@@ -1,13 +1,13 @@
 import logging
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth import require_admin
 from app.config import settings
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.models import (
     AppSetting,
     BgpPeering,
@@ -34,6 +34,14 @@ router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 _state = {"enabled": True}
 
 SEED_DEMO_FLEET = "seed_demo_fleet"
+# How often simulated incidents happen, as a multiplier of the default pace
+# (1 = default, 0 = none, MAX_RATE = five times as many) - one for the L1
+# fiber cuts (app.fiber_faults) and one for the L3 trap simulator
+# (simulator/trap_simulator.py). Persisted, unlike the on/off flag above, so
+# a tuned demo keeps its pace across redeploys.
+L1_RATE = "l1_incident_rate"
+L3_RATE = "l3_incident_rate"
+MAX_RATE = 5.0
 
 
 class SimulationStatus(BaseModel):
@@ -44,6 +52,16 @@ class SimulationStatusOut(SimulationStatus):
     # Whether the simulator seeds its built-in demo fleet when it starts -
     # turned off for good by reset_fleet, so a cleared map stays clear.
     seed_demo_fleet: bool = True
+    l1_rate: float = 1.0
+    l3_rate: float = 1.0
+    # Average fiber cuts per hour at l1_rate 1, for the Settings slider's
+    # estimate.
+    l1_base_per_hour: float = 0.0
+
+
+class SimulationRates(BaseModel):
+    l1_rate: float | None = Field(default=None, ge=0, le=MAX_RATE)
+    l3_rate: float | None = Field(default=None, ge=0, le=MAX_RATE)
 
 
 class FleetResetOut(BaseModel):
@@ -61,17 +79,58 @@ def _seed_demo_fleet(db: Session) -> bool:
     return row is None or row.value == "true"
 
 
+def _rate(db: Session, key: str) -> float:
+    row = db.get(AppSetting, key)
+    return float(row.value) if row else 1.0
+
+
+def l1_rate() -> float:
+    """Current L1 multiplier, for app.fiber_faults - cached here so its
+    polling doesn't hit the database every few seconds."""
+    if "l1_rate" not in _state:
+        db = SessionLocal()
+        try:
+            _state["l1_rate"] = _rate(db, L1_RATE)
+        finally:
+            db.close()
+    return _state["l1_rate"]
+
+
+def _status(db: Session) -> SimulationStatusOut:
+    mean_interval = (settings.fiber_fault_interval_min_seconds + settings.fiber_fault_interval_max_seconds) / 2
+    return SimulationStatusOut(
+        enabled=_state["enabled"],
+        seed_demo_fleet=_seed_demo_fleet(db),
+        l1_rate=_rate(db, L1_RATE),
+        l3_rate=_rate(db, L3_RATE),
+        l1_base_per_hour=3600 / mean_interval if settings.fiber_fault_simulation and mean_interval > 0 else 0.0,
+    )
+
+
 # Deliberately unauthenticated (see app.main) - the simulator polls it, and
-# two on/off flags reveal nothing worth protecting.
+# a few demo knobs reveal nothing worth protecting.
 @router.get("/status", response_model=SimulationStatusOut)
 def get_status(db: Session = Depends(get_db)):
-    return SimulationStatusOut(enabled=_state["enabled"], seed_demo_fleet=_seed_demo_fleet(db))
+    return _status(db)
 
 
 @router.post("/status", response_model=SimulationStatusOut, dependencies=[Depends(require_admin)])
 def set_status(payload: SimulationStatus, db: Session = Depends(get_db)):
     _state["enabled"] = payload.enabled
-    return SimulationStatusOut(enabled=_state["enabled"], seed_demo_fleet=_seed_demo_fleet(db))
+    return _status(db)
+
+
+@router.post("/rates", response_model=SimulationStatusOut, dependencies=[Depends(require_admin)])
+def set_rates(payload: SimulationRates, db: Session = Depends(get_db)):
+    for key, value in ((L1_RATE, payload.l1_rate), (L3_RATE, payload.l3_rate)):
+        if value is None:
+            continue
+        setting = db.get(AppSetting, key) or AppSetting(key=key)
+        setting.value = str(value)
+        db.add(setting)
+    db.commit()
+    _state["l1_rate"] = _rate(db, L1_RATE)
+    return _status(db)
 
 
 # Children before parents - none of these FKs cascade at the DB level.
