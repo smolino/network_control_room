@@ -333,6 +333,29 @@ class IncidentNotificationOut(BaseModel):
     sent_at: datetime
 
 
+class OpenTypeCount(BaseModel):
+    incident_type: str
+    layer: str  # "L1" or "L3"
+    count: int
+
+
+class StatsTimeseries(BaseModel):
+    """Per-bucket telemetry for the Dashboard's chart strip - see
+    app.api.stats.timeseries. All lists line up with `buckets` (each a
+    bucket's start time, UTC)."""
+
+    window_minutes: int
+    bucket_minutes: int
+    buckets: list[datetime]
+    traps: list[int]  # SNMP traps received
+    incidents_opened: list[int]
+    open_incidents: list[int]  # open at the end of each bucket
+    autoheal_actions: list[int]  # remediation attempts that ran (not skipped)
+    autoheal_failed: list[int]
+    # Currently open incidents, fleet-wide, by type - most first.
+    open_by_type: list[OpenTypeCount]
+
+
 class StatsSummary(BaseModel):
     total_routers: int
     total_customer_routers: int

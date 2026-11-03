@@ -366,7 +366,23 @@ export default function App() {
               }}
             />
           )}
-          {activeView === "dashboard" && <Dashboard stats={stats} incidents={incidents} />}
+          {activeView === "dashboard" && (
+            <Dashboard stats={stats}>
+              <MapView
+                routers={routers}
+                peerings={peerings}
+                onFleetChanged={reloadAll}
+                impactHighlight={impactHighlight}
+                onClearImpact={() => setImpactHighlight(null)}
+                faultHighlight={faultHighlight}
+                onClearFault={() => setFaultHighlight(null)}
+                onSelectRouter={(id) => {
+                  setSelectedRouterId(id);
+                  setView("routers");
+                }}
+              />
+            </Dashboard>
+          )}
           {activeView === "routers" && (
             <RouterList
               routers={routers}

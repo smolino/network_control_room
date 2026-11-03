@@ -770,3 +770,281 @@ button:not(:disabled):hover {
     max-height: 45vh;
   }
 }
+
+/* Dashboard - live map backdrop with floating KPI cards and a telemetry
+   strip (see components/Dashboard.jsx). The overlay containers ignore the
+   pointer so the map stays draggable between cards; the cards themselves
+   take it back. z-index clears Leaflet's panes/controls (<= 800) but stays
+   under modals (2000). */
+.dashboard {
+  position: relative;
+  height: 100%;
+  min-height: 560px;
+}
+
+.dashboard-map {
+  position: absolute;
+  inset: 0;
+}
+
+/* Night-mode basemap: the same OpenStreetMap tiles as the Map tab,
+   inverted and hue-shifted back so water stays blue. Only the tile pane -
+   markers and lines keep their real colors. */
+.dashboard .leaflet-container {
+  background: #0b1120;
+}
+
+.dashboard .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(200deg) brightness(0.85) contrast(0.9) saturate(0.6);
+}
+
+.dash-kpis,
+.dash-bottom {
+  position: absolute;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.dash-kpis > *,
+.dash-bottom > * {
+  pointer-events: auto;
+}
+
+.dash-kpis {
+  top: 12px;
+  right: 12px;
+  left: 290px; /* clear of the map's layer-toggle panel */
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.dash-kpi {
+  min-width: 140px;
+  background: rgba(15, 20, 32, 0.82);
+  backdrop-filter: blur(6px);
+  border: 1px solid #2c3754;
+  border-radius: 10px;
+  padding: 0.7rem 1rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.dash-kpi .value {
+  font-size: 1.9rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.dash-kpi .label {
+  color: #9aa4bf;
+  font-size: 0.78rem;
+  margin-top: 0.2rem;
+}
+
+.dash-kpi .sub {
+  color: #9aa4bf;
+  font-size: 0.7rem;
+  margin-top: 0.2rem;
+}
+
+.dash-bottom {
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.4rem;
+}
+
+/* One row of panels; scrolls sideways on narrower screens rather than
+   wrapping into a second row that would bury the map. */
+.dash-charts {
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(200px, 1fr));
+  gap: 0.75rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.dash-window {
+  display: flex;
+  gap: 2px;
+  background: rgba(15, 20, 32, 0.82);
+  border: 1px solid #2c3754;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.dash-window button {
+  background: transparent;
+  border: none;
+  color: #9aa4bf;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.dash-window button.active {
+  background: #2563eb;
+  color: #fff;
+}
+
+.dash-panel {
+  min-width: 0;
+  background: rgba(15, 20, 32, 0.86);
+  backdrop-filter: blur(6px);
+  border: 1px solid #2c3754;
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem 0.4rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.dash-error {
+  grid-column: 1 / -1;
+  color: #f87171;
+  font-size: 0.8rem;
+}
+
+.dash-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.dash-panel-head .title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dash-panel-head .latest {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.dash-panel-sub {
+  color: #7c87a3;
+  font-size: 0.68rem;
+  min-height: 1em;
+  margin-bottom: 0.2rem;
+}
+
+.dash-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: crosshair;
+}
+
+.dash-chart .grid {
+  stroke: #232c42;
+  stroke-width: 1;
+}
+
+.dash-chart .tick {
+  fill: #7c87a3;
+  font-size: 9.5px;
+}
+
+.dash-chart .avg-line {
+  stroke: #f87171;
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+.dash-chart .hover-line {
+  stroke: #9aa4bf;
+  stroke-width: 0.8;
+  stroke-dasharray: 2 2;
+}
+
+.dash-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 2px;
+}
+
+.dash-bar-row {
+  display: grid;
+  grid-template-columns: 5.6rem 1fr 2rem;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.66rem;
+}
+
+.dash-bar-row .name {
+  color: #9aa4bf;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dash-bar-row .track {
+  height: 7px;
+  background: #1c2438;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.dash-bar-row .fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+}
+
+.dash-bar-row .count {
+  text-align: right;
+}
+
+.dash-empty {
+  color: #7c87a3;
+  font-size: 0.75rem;
+  padding: 1rem 0;
+  text-align: center;
+}
+
+/* Narrow screens: no room to float over the map - stack map, cards and
+   charts in normal flow instead. */
+@media (max-width: 900px) {
+  .dashboard {
+    height: auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding-bottom: 0.75rem;
+  }
+
+  .dashboard-map {
+    position: relative;
+    height: 55vh;
+  }
+
+  .dash-kpis,
+  .dash-bottom {
+    position: static;
+    padding: 0 0.75rem;
+  }
+
+  .dash-kpis {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dash-kpi {
+    min-width: 0;
+  }
+
+  .dash-charts {
+    grid-template-columns: 1fr;
+    overflow-x: visible;
+  }
+}

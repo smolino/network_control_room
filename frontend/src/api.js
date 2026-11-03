@@ -150,6 +150,11 @@ export function fetchStats() {
   return getJSON("/stats/summary");
 }
 
+// windowMinutes: 60, 360 or 1440 - see backend/app/api/stats.py:timeseries.
+export function fetchStatsTimeseries(windowMinutes = 60) {
+  return getJSON(`/stats/timeseries?window_minutes=${windowMinutes}`);
+}
+
 export function acknowledgeIncident(id) {
   return postJSON(`/incidents/${id}/ack`);
 }
