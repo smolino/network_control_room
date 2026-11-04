@@ -70,10 +70,18 @@ header.topbar h1 {
 
 .stats-strip {
   margin-left: auto;
+  min-width: 0; /* lets it shrink (and wrap) instead of pushing the actions off-screen */
   display: flex;
-  gap: 1.25rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.2rem 1.25rem;
   font-size: 0.85rem;
   color: #9aa4bf;
+}
+
+/* Each stat wraps as a whole ("46 open incidents"), never word by word. */
+.stats-strip span {
+  white-space: nowrap;
 }
 
 .stats-strip strong {
@@ -83,6 +91,25 @@ header.topbar h1 {
 .topbar-actions {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
+}
+
+/* Laptop widths: tighten the spacing so the strip fits on one line for longer. */
+@media (max-width: 1360px) {
+  header.topbar {
+    gap: 1rem;
+  }
+
+  .stats-strip {
+    column-gap: 0.85rem;
+    font-size: 0.8rem;
+  }
+
+  .current-user,
+  .icon-button,
+  .logout-button {
+    margin-left: 0.6rem;
+  }
 }
 
 .logout-button {

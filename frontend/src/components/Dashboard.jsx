@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchStatsTimeseries } from "../api.js";
 
 // Dashboard = the live map as a backdrop, KPI cards floating over it, and a
@@ -37,8 +37,33 @@ export default function Dashboard({ stats, children }) {
     };
   }, [windowMinutes]);
 
+  // The KPI cards and charts float over the map; publish how much of its top
+  // and bottom they cover (they wrap differently with the screen width) so the
+  // map's own banners - blast radius, fiber fault, BGP link picker - are
+  // placed clear of them instead of underneath.
+  const rootRef = useRef(null);
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || typeof ResizeObserver === "undefined") return undefined;
+    const update = () => {
+      const box = root.getBoundingClientRect();
+      const floating = (el) => el && getComputedStyle(el).position === "absolute";
+      const kpis = root.querySelector(".dash-kpis");
+      const bottom = root.querySelector(".dash-bottom");
+      const top = floating(kpis) ? kpis.getBoundingClientRect().bottom - box.top + 12 : 12;
+      const below = floating(bottom) ? box.bottom - bottom.getBoundingClientRect().top + 12 : 12;
+      root.style.setProperty("--map-overlay-top", `${Math.round(top)}px`);
+      root.style.setProperty("--map-overlay-bottom", `${Math.round(below)}px`);
+    };
+    const ro = new ResizeObserver(update);
+    ro.observe(root);
+    root.querySelectorAll(".dash-kpis, .dash-bottom").forEach((el) => ro.observe(el));
+    update();
+    return () => ro.disconnect();
+  }, [stats]);
+
   return (
-    <div className="dashboard">
+    <div className="dashboard" ref={rootRef}>
       <div className="dashboard-map">{children}</div>
 
       {stats && (

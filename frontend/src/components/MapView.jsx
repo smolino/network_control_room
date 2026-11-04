@@ -546,7 +546,7 @@ export default function MapView({
           data-map-overlay
           style={{
             position: "absolute",
-            bottom: 12,
+            bottom: "var(--map-overlay-bottom, 12px)",
             left: 50,
             zIndex: 1000,
             background: "#161c2cdd",
@@ -622,7 +622,7 @@ export default function MapView({
           data-map-overlay
           style={{
             position: "absolute",
-            top: 12,
+            top: "var(--map-overlay-top, 12px)",
             right: 12,
             zIndex: 1000,
             background: "#161c2cdd",
@@ -656,7 +656,7 @@ export default function MapView({
           data-map-overlay
           style={{
             position: "absolute",
-            top: 12,
+            top: "var(--map-overlay-top, 12px)",
             right: 12,
             zIndex: 1000,
             background: "#161c2cdd",
