@@ -18,6 +18,7 @@ import IncidentList from "./components/IncidentList.jsx";
 import RouterDetail from "./components/RouterDetail.jsx";
 import HumanReview from "./components/HumanReview.jsx";
 import Login from "./components/Login.jsx";
+import Portal from "./components/Portal.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 
 // minRole only hides tabs the backend would refuse anyway (see app/auth.py).
@@ -84,6 +85,11 @@ export default function App() {
   const [session, setSession] = useState(loadSession);
   const currentUser = session?.user ?? null;
   const authenticated = !!currentUser;
+  // Signed-out visitors land on the public portal; /login (or an emailed
+  // ?incident= link) goes straight to the sign-in form.
+  const [showLogin, setShowLogin] = useState(
+    () => window.location.pathname === "/login" || !!incidentIdFromUrl()
+  );
   const [focusIncidentId, setFocusIncidentId] = useState(incidentIdFromUrl);
   const [view, setView] = useState(() => (incidentIdFromUrl() ? "human-review" : "map"));
   const [routers, setRouters] = useState([]);
@@ -106,11 +112,31 @@ export default function App() {
   const handleSessionChanged = useCallback((next) => {
     saveSession(next);
     setSession(next);
+    if (window.location.pathname === "/login") window.history.replaceState(null, "", "/");
+  }, []);
+
+  const openLogin = useCallback(() => {
+    window.history.pushState(null, "", "/login");
+    setShowLogin(true);
+  }, []);
+
+  const openPortal = useCallback(() => {
+    window.history.pushState(null, "", "/");
+    setShowLogin(false);
+  }, []);
+
+  // Browser back/forward between the portal and /login.
+  useEffect(() => {
+    const onPop = () => setShowLogin(window.location.pathname === "/login");
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
   }, []);
 
   const logout = useCallback(() => {
     clearSession();
     setSession(null);
+    setShowLogin(true);
+    window.history.replaceState(null, "", "/login");
     setImpactHighlight(null);
     setFaultHighlight(null);
   }, []);
@@ -271,8 +297,10 @@ export default function App() {
   const selectedRouter = routers.find((r) => r.id === selectedRouterId) || null;
 
   if (!authenticated) {
-    return (
-      <Login onLogin={handleSessionChanged} />
+    return showLogin ? (
+      <Login onLogin={handleSessionChanged} onBack={openPortal} />
+    ) : (
+      <Portal onLoginClick={openLogin} />
     );
   }
 

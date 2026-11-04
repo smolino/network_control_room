@@ -1048,3 +1048,17 @@ button:not(:disabled):hover {
     overflow-x: visible;
   }
 }
+
+.login-back {
+  position: absolute;
+  top: 1.25rem;
+  left: 1.5rem;
+  z-index: 2;
+  color: #9aa4bf;
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+.login-back:hover {
+  color: #e6e9f0;
+}

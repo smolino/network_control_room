@@ -6,7 +6,7 @@ const LINK_DISTANCE = 140;
 const NODE_COLOR = "96, 165, 250";
 const LINK_COLOR = "96, 165, 250";
 
-function NetworkBackground() {
+export function NetworkBackground() {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -84,7 +84,7 @@ function NetworkBackground() {
   return <canvas ref={canvasRef} className="login-canvas" />;
 }
 
-export default function Login({ onLogin }) {
+export default function Login({ onLogin, onBack }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [otpCode, setOtpCode] = useState("");
@@ -125,6 +125,18 @@ export default function Login({ onLogin }) {
   return (
     <div className="login-page">
       <NetworkBackground />
+      {onBack && (
+        <a
+          href="/"
+          className="login-back"
+          onClick={(e) => {
+            e.preventDefault();
+            onBack();
+          }}
+        >
+          ← Back to site
+        </a>
+      )}
       {!otpStep ? (
         <form className="login-card" onSubmit={handleCredentialsSubmit}>
           <h1>Network Control Room</h1>
