@@ -92,6 +92,12 @@ const VIDEOS = [
     title: "Telco NOC architecture explained (Kafka + Neo4j)",
     text: "How mediation, normalization and correlation fit together, and how the topology graph finds the root cause.",
   },
+  {
+    id: "D1Bx9AOBLm8",
+    tag: "MIBs & Traps",
+    title: "Import Juniper MIBs & create custom SNMP traps",
+    text: "Teach the control room a new vendor: import MIBs, turn a trap into a custom rule, and watch a live trap open a prioritised incident and clear it.",
+  },
 ];
 
 // Plays inside the page: shows the thumbnail until clicked, then loads the
@@ -258,7 +264,7 @@ export default function Portal({ onLoginClick }) {
             <span className="portal-eyebrow">See it in action</span>
             <h2>Watch Network Control Room at work</h2>
             <p className="portal-section-sub">
-              A guided demo of the console and a walkthrough of the architecture behind it.
+              A guided demo of the console, a walkthrough of the architecture behind it, and how to onboard any vendor's SNMP traps.
             </p>
           </div>
           <div className="portal-video-grid">
