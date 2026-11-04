@@ -2,7 +2,7 @@ import { useState } from "react";
 import { NetworkBackground } from "./Login.jsx";
 import "./portal.css";
 
-const CONTACT_EMAIL = "sergio.molino@point2point.org.uk";
+const CONTACT_EMAIL = "controlroom@point2point.org.uk";
 const CONTACT_HREF = `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent("Network Control Room - product information")}`;
 
 // Public product page shown before sign-in. Purely static - it makes no API
