@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { NetworkBackground } from "./Login.jsx";
 import "./portal.css";
 
@@ -75,6 +76,47 @@ const PIPELINE = [
   { step: "04", title: "Remediation", text: "Backs up the config, runs or declines a playbook, and confirms the fix." },
   { step: "05", title: "Human review", text: "Sends what needs a person to a live, prioritised board." },
 ];
+
+const VIDEOS = [
+  {
+    id: "wLHMmDIcE94",
+    tag: "Product demo",
+    title: "AI-free Telco NOC demo: L1/L3 root-cause correlation and auto-heal",
+    text: "Walks through the console: a fiber cut is correlated to its symptoms, auto-heal runs safely, and incidents move through the Human Review board.",
+  },
+  {
+    id: "ykB87Gxih6w",
+    tag: "Architecture",
+    title: "Telco NOC architecture explained (Kafka + Neo4j)",
+    text: "How mediation, normalization, correlation and remediation fit together, and how the topology graph finds the root cause.",
+  },
+];
+
+// Plays inside the page: shows the thumbnail until clicked, then loads the
+// privacy-enhanced (youtube-nocookie) player in place - no redirect to YouTube.
+function VideoPlayer({ id, title }) {
+  const [playing, setPlaying] = useState(false);
+  return (
+    <div className="portal-video-frame">
+      {playing ? (
+        <iframe
+          src={`https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&modestbranding=1&playsinline=1`}
+          title={title}
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          referrerPolicy="strict-origin-when-cross-origin"
+          allowFullScreen
+        />
+      ) : (
+        <button type="button" className="portal-video-poster" onClick={() => setPlaying(true)} aria-label={`Play: ${title}`}>
+          <img src={`https://i.ytimg.com/vi/${id}/hqdefault.jpg`} alt="" loading="lazy" />
+          <span className="portal-video-play" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="28" height="28"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
+          </span>
+        </button>
+      )}
+    </div>
+  );
+}
 
 function HeroVisual() {
   // A stylised fiber cut: one L1 root cause, two suppressed L3 symptoms.
@@ -160,6 +202,7 @@ export default function Portal({ onLoginClick }) {
             Network Control Room
           </a>
           <div className="portal-nav-links">
+            <a href="#videos">Videos</a>
             <a href="#features">Platform</a>
             <a href="#how">How it works</a>
             <a href="#customers">Who it's for</a>
@@ -206,7 +249,31 @@ export default function Portal({ onLoginClick }) {
         </div>
       </section>
 
-      <section className="portal-section portal-problem">
+      <section className="portal-section portal-videos" id="videos">
+        <div className="portal-container">
+          <div className="portal-section-head">
+            <span className="portal-eyebrow">See it in action</span>
+            <h2>Watch Network Control Room at work</h2>
+            <p className="portal-section-sub">
+              A guided demo of the console and a walkthrough of the architecture behind it.
+            </p>
+          </div>
+          <div className="portal-video-grid">
+            {VIDEOS.map((v) => (
+              <article key={v.id} className="portal-video-card">
+                <VideoPlayer id={v.id} title={v.title} />
+                <div className="portal-video-body">
+                  <span className="portal-aud-tag">{v.tag}</span>
+                  <h3>{v.title}</h3>
+                  <p>{v.text}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="portal-section portal-alt portal-problem">
         <div className="portal-container portal-split">
           <div>
             <span className="portal-eyebrow">The problem</span>
