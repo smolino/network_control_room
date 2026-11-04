@@ -67,8 +67,8 @@ const REPEATER_STROKE = "#581c87";
 const ALERT_STROKE = "#f97316";
 // A router whose device reported the problem gone (e.g. linkUp) while its
 // incident is still open for an engineer to confirm: up again, but not
-// signed off yet - cyan, distinct from both healthy green and the alarms.
-const RECOVERED_COLOR = "#22d3ee";
+// signed off yet - orange, between the red of down and the green of healthy.
+const RECOVERED_COLOR = "#f97316";
 // Dashed ring for a router that's an endpoint of a peering with an open L1
 // (fiber) incident, but has nothing of its own in triage - distinguishes
 // "symptomatic of an upstream physical fault" from the solid ALERT_STROKE

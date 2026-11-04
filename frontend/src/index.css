@@ -1327,8 +1327,8 @@ button:not(:disabled):hover {
 }
 
 /* Incident cleared by the device (linkUp ...) but still open for an engineer
-   - same cyan as the router's marker on the map. */
+   - same orange as the router's marker on the map. */
 .badge.recovered {
-  background: rgba(34, 211, 238, 0.15);
-  color: #22d3ee;
+  background: rgba(249, 115, 22, 0.15);
+  color: #f97316;
 }
