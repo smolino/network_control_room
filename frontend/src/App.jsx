@@ -23,7 +23,6 @@ import SettingsPanel from "./components/SettingsPanel.jsx";
 
 // minRole only hides tabs the backend would refuse anyway (see app/auth.py).
 const TABS = [
-  { key: "map", label: "Map" },
   { key: "dashboard", label: "Dashboard" },
   { key: "routers", label: "Routers" },
   { key: "add-fleet", label: "Add Fleet", minRole: "admin" },
@@ -91,7 +90,7 @@ export default function App() {
     () => window.location.pathname === "/login" || !!incidentIdFromUrl()
   );
   const [focusIncidentId, setFocusIncidentId] = useState(incidentIdFromUrl);
-  const [view, setView] = useState(() => (incidentIdFromUrl() ? "human-review" : "map"));
+  const [view, setView] = useState(() => (incidentIdFromUrl() ? "human-review" : "dashboard"));
   const [routers, setRouters] = useState([]);
   const [incidents, setIncidents] = useState([]);
   const [customerIncidents, setCustomerIncidents] = useState([]);
@@ -154,7 +153,7 @@ export default function App() {
   }, [logout]);
 
   const visibleTabs = TABS.filter((t) => !t.minRole || hasRole(currentUser, t.minRole));
-  const activeView = visibleTabs.some((t) => t.key === view) ? view : "map";
+  const activeView = visibleTabs.some((t) => t.key === view) ? view : "dashboard";
 
   const showImpactOnMap = useCallback(async (incident) => {
     try {
@@ -165,7 +164,7 @@ export default function App() {
       }
       setFaultHighlight(null);
       setImpactHighlight({ incidentId: incident.id, incidentType: incident.incident_type, ...impact });
-      setView("map");
+      setView("dashboard");
     } catch (err) {
       window.alert(`Couldn't load the impact of incident #${incident.id}: ${err.message}`);
     }
@@ -175,7 +174,7 @@ export default function App() {
     if (!incident.fault_location) return;
     setImpactHighlight(null);
     setFaultHighlight({ incidentId: incident.id, status: incident.status, ...incident.fault_location });
-    setView("map");
+    setView("dashboard");
   }, []);
 
   const reloadTeams = useCallback(async () => {
@@ -379,21 +378,6 @@ export default function App() {
           ))}
         </nav>
         <main>
-          {activeView === "map" && (
-            <MapView
-              routers={routers}
-              peerings={peerings}
-              onFleetChanged={reloadAll}
-              impactHighlight={impactHighlight}
-              onClearImpact={() => setImpactHighlight(null)}
-              faultHighlight={faultHighlight}
-              onClearFault={() => setFaultHighlight(null)}
-              onSelectRouter={(id) => {
-                setSelectedRouterId(id);
-                setView("routers");
-              }}
-            />
-          )}
           {activeView === "dashboard" && (
             <Dashboard stats={stats}>
               <MapView

@@ -3,7 +3,7 @@ import { fetchStatsTimeseries } from "../api.js";
 
 // Dashboard = the live map as a backdrop, KPI cards floating over it, and a
 // telemetry strip along the bottom. The map itself is passed in as children
-// (the same MapView the Map tab uses), so it keeps all its controls.
+// (MapView), so it keeps all its controls.
 
 const WINDOWS = [
   { minutes: 60, label: "1h" },
