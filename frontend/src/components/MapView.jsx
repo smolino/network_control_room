@@ -5,12 +5,13 @@ import { seedBgpPeerings } from "../api.js";
 import { useHasRole } from "../auth.js";
 import { haversineKm, REPEATER_SPACING_KM } from "../geo.js";
 
-// The dashboard floats its layer toggles and KPI cards over the top of the map and its charts
-// over the bottom (z-index above Leaflet's panes), so a popup opened near
-// either edge would be hidden behind them. Leaflet pans the map to keep a
-// popup clear of these margins (pixels: [x, y]).
-const POPUP_PAD_TOP_LEFT = [24, 200];
-const POPUP_PAD_BOTTOM_RIGHT = [24, 210];
+// Panels floated over the map (layer toggles, KPI cards, charts) sit above
+// Leaflet's panes, so a popup opened under one would be hidden. Leaflet's own
+// autoPan only keeps popups inside the map's edges, so KeepPopupsClear pans
+// the map until the popup clears every panel it overlaps, measured live
+// (the KPI cards wrap onto more rows on narrower screens).
+const MAP_OVERLAYS = "[data-map-overlay], .dash-kpi, .dash-bottom > *";
+const OVERLAY_GAP = 10;
 
 // Marker fill colors - kept vivid so routers pop against any tile background.
 const STATUS_COLOR = {
@@ -182,7 +183,7 @@ function RouterMarker({
           call below) - clicking one there selects it for a BGP link instead
           of opening this popup, so it's suppressed while that's active. */}
       {!linkMode && (
-        <Popup autoPanPaddingTopLeft={POPUP_PAD_TOP_LEFT} autoPanPaddingBottomRight={POPUP_PAD_BOTTOM_RIGHT}>
+        <Popup>
           <div style={{ fontSize: "0.85rem" }}>
             <strong>{r.hostname}</strong>
             <div>{r.site_name} — {r.city}, {r.country}</div>
@@ -222,6 +223,47 @@ function RouterMarker({
 
 // Zooms to the highlighted blast radius once, when it's first shown - not on
 // every routers refresh, so the operator can still pan away from it.
+function KeepPopupsClear() {
+  const map = useMap();
+  useEffect(() => {
+    let timer;
+    const clear = (popup) => {
+      const el = popup.getElement();
+      if (!el || !map.hasLayer(popup)) return;
+      const box = el.getBoundingClientRect();
+      const mapBox = map.getContainer().getBoundingClientRect();
+      const midY = mapBox.top + mapBox.height / 2;
+      let down = 0;
+      let up = 0;
+      for (const o of document.querySelectorAll(MAP_OVERLAYS)) {
+        const r = o.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const overlaps = r.left < box.right && r.right > box.left && r.top < box.bottom && r.bottom > box.top;
+        if (!overlaps) continue;
+        if (r.top + r.height / 2 < midY) down = Math.max(down, r.bottom + OVERLAY_GAP - box.top);
+        else up = Math.max(up, box.bottom - (r.top - OVERLAY_GAP));
+      }
+      if (down > 0) map.panBy([0, -down]);
+      else if (up > 0) map.panBy([0, up]);
+    };
+    // Check on the next frame (the popup is laid out by then), and once more
+    // after Leaflet's own autoPan animation. Not debounced: a blinking marker
+    // re-renders - and so re-opens - its popup every blink, which would keep
+    // pushing a debounced check back.
+    const onOpen = (e) => {
+      requestAnimationFrame(() => clear(e.popup));
+      clearTimeout(timer);
+      timer = setTimeout(() => clear(e.popup), 300);
+    };
+    map.on("popupopen", onOpen);
+    return () => {
+      clearTimeout(timer);
+      map.off("popupopen", onOpen);
+    };
+  }, [map]);
+  return null;
+}
+
 function FitToRouters({ highlightKey, points, maxZoom = 7 }) {
   const map = useMap();
   useEffect(() => {
@@ -418,6 +460,7 @@ export default function MapView({
   return (
     <div style={{ position: "relative", height: "100%", width: "100%" }}>
       <div
+        data-map-overlay
         style={{
           position: "absolute",
           top: 12,
@@ -500,6 +543,7 @@ export default function MapView({
 
       {linkMode && linkRouterA && (
         <div
+          data-map-overlay
           style={{
             position: "absolute",
             bottom: 12,
@@ -575,6 +619,7 @@ export default function MapView({
 
       {impactHighlight && (
         <div
+          data-map-overlay
           style={{
             position: "absolute",
             top: 12,
@@ -608,6 +653,7 @@ export default function MapView({
 
       {faultHighlight && (
         <div
+          data-map-overlay
           style={{
             position: "absolute",
             top: 12,
@@ -652,6 +698,7 @@ export default function MapView({
         preferCanvas
         style={{ height: "100%", width: "100%" }}
       >
+        <KeepPopupsClear />
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
