@@ -19,7 +19,7 @@ from app.models import (
     RouterType,
     TrapEvent,
 )
-from app.incidents.service import needs_attention_router_ids
+from app.incidents.service import device_cleared_router_ids, needs_attention_router_ids
 from app.schemas import (
     RemediationActionOut,
     RouterConfigBackupOut,
@@ -35,9 +35,10 @@ from app.topology_graph import delete_peering_from_neo4j, delete_router_from_neo
 router = APIRouter(prefix="/api/routers", tags=["routers"])
 
 
-def _to_router_out(r: Router, attention_ids: set[int]) -> RouterOut:
+def _to_router_out(r: Router, attention_ids: set[int], cleared_ids: set[int] = frozenset()) -> RouterOut:
     out = RouterOut.model_validate(r)
     out.needs_attention = r.id in attention_ids
+    out.device_cleared = r.id in cleared_ids
     out.isis_net = isis_net(r) if r.router_type == RouterType.PRIMARY else None
     return out
 
@@ -46,7 +47,8 @@ def _to_router_out(r: Router, attention_ids: set[int]) -> RouterOut:
 def list_routers(db: Session = Depends(get_db)):
     routers = db.query(Router).order_by(Router.id).all()
     attention_ids = needs_attention_router_ids(db)
-    return [_to_router_out(r, attention_ids) for r in routers]
+    cleared_ids = device_cleared_router_ids(db)
+    return [_to_router_out(r, attention_ids, cleared_ids) for r in routers]
 
 
 @router.get("/{router_id}", response_model=RouterOut)
@@ -55,7 +57,7 @@ def get_router(router_id: int, db: Session = Depends(get_db)):
     if obj is None:
         raise HTTPException(status_code=404, detail="Router not found")
     attention_ids = needs_attention_router_ids(db, [router_id])
-    return _to_router_out(obj, attention_ids)
+    return _to_router_out(obj, attention_ids, device_cleared_router_ids(db, [router_id]))
 
 
 @router.delete("/{router_id}", dependencies=[Depends(require_admin)])

@@ -1325,3 +1325,10 @@ button:not(:disabled):hover {
   gap: 0.5rem !important;
   padding-bottom: 0.45rem;
 }
+
+/* Incident cleared by the device (linkUp ...) but still open for an engineer
+   - same cyan as the router's marker on the map. */
+.badge.recovered {
+  background: rgba(34, 211, 238, 0.15);
+  color: #22d3ee;
+}

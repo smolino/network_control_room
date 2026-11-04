@@ -207,6 +207,8 @@ def open_or_bump(
     incident = query.first()
     if incident:
         incident.trap_count += 1
+        # The condition is back - it's no longer "cleared by the device".
+        incident.device_cleared_at = None
         touch(db, incident)
         return incident, False
 
@@ -257,7 +259,8 @@ def refresh_router_link_status(db: Session, router: Router) -> None:
     """Flips the router back to UP once no open LINK_DOWN/LINK_FLAP incident
     is keeping it down/flapping - after a linkUp, or after one of those
     incidents is resolved by hand (without this, a router resolved that way
-    would stay DOWN forever, since nothing else would ever clear it)."""
+    would stay DOWN forever, since nothing else would ever clear it).
+    Incidents the device has already cleared don't hold it down."""
     if router.status == RouterStatus.UP:
         return
     still_open = (
@@ -266,6 +269,8 @@ def refresh_router_link_status(db: Session, router: Router) -> None:
             Incident.router_id == router.id,
             Incident.status == IncidentStatus.OPEN,
             Incident.incident_type.in_(LINK_TYPES),
+            # Cleared by the device (linkUp) but still open for review.
+            Incident.device_cleared_at.is_(None),
         )
         .count()
     )
@@ -315,9 +320,9 @@ def clear(
 ) -> list[Incident]:
     """The device reported the condition gone (linkUp, isisAdjacencyUp,
     bgpEstablished) - resolves the matching open incidents, whatever stage
-    they're in. Does nothing with auto-heal off."""
-    if not auto_heal_enabled(db):
-        return []
+    they're in. With auto-heal off they stay open for an engineer, only
+    marked device_cleared_at (the router shows as recovered, pending
+    review); returns just the incidents actually resolved."""
     incidents = (
         db.query(Incident)
         .filter(
@@ -328,6 +333,12 @@ def clear(
         )
         .all()
     )
+    if not auto_heal_enabled(db):
+        for incident in incidents:
+            if incident.device_cleared_at is None:
+                incident.device_cleared_at = now
+                touch(db, incident)
+        return []
     for incident in incidents:
         _resolve(db, incident, now, ResolutionReason.AUTO_CLEARED, SYSTEM)
     return incidents
@@ -497,6 +508,19 @@ def needs_attention_router_ids(db: Session, router_ids: list[int] | None = None)
     return {row[0] for row in query.all()}
 
 
+def device_cleared_router_ids(db: Session, router_ids: list[int] | None = None) -> set[int]:
+    """Routers with an open incident the device itself has cleared (see
+    clear) - recovered, waiting for an engineer to confirm."""
+    query = (
+        db.query(Incident.router_id)
+        .filter(Incident.status == IncidentStatus.OPEN, Incident.device_cleared_at.isnot(None))
+        .distinct()
+    )
+    if router_ids is not None:
+        query = query.filter(Incident.router_id.in_(router_ids))
+    return {row[0] for row in query.all()}
+
+
 def queue(db: Session, limit: int = 500) -> list[Incident]:
     """The Human Review queue: everything a person has to act on, most
     urgent first."""
@@ -561,12 +585,13 @@ def serialize(db: Session, incidents: list[Incident]) -> list[IncidentOut]:
     return out
 
 
-def router_payload(router: Router, needs_attention: bool) -> dict:
+def router_payload(router: Router, needs_attention: bool, device_cleared: bool = False) -> dict:
     return {
         "id": router.id,
         "hostname": router.hostname,
         "status": router.status.value,
         "needs_attention": needs_attention,
+        "device_cleared": device_cleared,
         "router_type": router.router_type.value,
     }
 
@@ -583,10 +608,11 @@ def pop_event(db: Session, event_type: str = "incident_updated", routers: list[R
     if not incidents and not touched_routers:
         return None
     attention = needs_attention_router_ids(db, list(touched_routers))
+    cleared = device_cleared_router_ids(db, list(touched_routers))
     return {
         "type": event_type,
         "incidents": [item.model_dump(mode="json") for item in serialize(db, incidents)],
-        "routers": [router_payload(r, r.id in attention) for r in touched_routers.values()],
+        "routers": [router_payload(r, r.id in attention, r.id in cleared) for r in touched_routers.values()],
         **extra,
     }
 

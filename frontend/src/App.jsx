@@ -71,7 +71,14 @@ function patchRouters(prev, updates) {
   if (!updates?.length) return prev;
   const byId = new Map(updates.map((r) => [r.id, r]));
   return prev.map((r) =>
-    byId.has(r.id) ? { ...r, status: byId.get(r.id).status, needs_attention: byId.get(r.id).needs_attention } : r
+    byId.has(r.id)
+      ? {
+          ...r,
+          status: byId.get(r.id).status,
+          needs_attention: byId.get(r.id).needs_attention,
+          device_cleared: byId.get(r.id).device_cleared,
+        }
+      : r
   );
 }
 

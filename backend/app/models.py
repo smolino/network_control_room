@@ -246,6 +246,11 @@ class Incident(Base):
     priority = Column(String(2), nullable=True, index=True)
     owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+    # When the device itself reported the condition gone (linkUp,
+    # isisAdjacencyUp, ...) while auto-heal is off - the incident stays open
+    # for an engineer to confirm, but the router is shown as recovered.
+    # Reset if the condition comes back. See app.incidents.service.clear.
+    device_cleared_at = Column(DateTime(timezone=True), nullable=True)
     # "system", or the username of whoever resolved it.
     resolved_by = Column(String(64), nullable=True)
     resolution_reason = Column(Enum(ResolutionReason, native_enum=False, length=32), nullable=True)

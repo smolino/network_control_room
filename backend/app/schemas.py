@@ -60,6 +60,10 @@ class RouterOut(BaseModel):
     # picked up yet (see app.incidents.service.needs_attention_router_ids).
     # The UI blinks the router's marker until it's acknowledged or clears.
     needs_attention: bool = False
+    # True while an open incident on this router has been cleared by the
+    # device itself (e.g. linkUp) but not yet resolved by an engineer - the
+    # map shows it as recovered, pending review.
+    device_cleared: bool = False
     # This router's IS-IS NET (Network Entity Title) - primaries only, since
     # customer CPE doesn't run the backbone IGP. See app.bundles.isis_net.
     isis_net: str | None = None
@@ -158,6 +162,7 @@ class IncidentOut(BaseModel):
     owner_user_id: int | None = None
     owner_username: str | None = None
     acknowledged_at: datetime | None = None
+    device_cleared_at: datetime | None = None
     resolved_by: str | None = None
     resolution_reason: ResolutionReason | None = None
     resolution_note: str | None = None

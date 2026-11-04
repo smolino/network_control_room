@@ -98,8 +98,14 @@ def compute_impacts(db: Session, incidents: list[Incident]) -> dict[int, Impact]
     """Blast radius for each open, service-affecting incident in
     `incidents`, keyed by incident id - batched so a 200-row incident list
     costs a handful of queries, not a few per row."""
+    # An incident the device has already cleared (linkUp while waiting for
+    # an engineer - see incidents.service.clear) no longer affects service.
     candidates = [
-        i for i in incidents if i.status == IncidentStatus.OPEN and i.incident_type in SERVICE_AFFECTING_TYPES
+        i
+        for i in incidents
+        if i.status == IncidentStatus.OPEN
+        and i.incident_type in SERVICE_AFFECTING_TYPES
+        and i.device_cleared_at is None
     ]
     if not candidates:
         return {}

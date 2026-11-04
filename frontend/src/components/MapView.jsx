@@ -65,6 +65,10 @@ const MARKER_STROKE = "#0b0f1a";
 const REPEATER_FILL = "#a855f7";
 const REPEATER_STROKE = "#581c87";
 const ALERT_STROKE = "#f97316";
+// A router whose device reported the problem gone (e.g. linkUp) while its
+// incident is still open for an engineer to confirm: up again, but not
+// signed off yet - cyan, distinct from both healthy green and the alarms.
+const RECOVERED_COLOR = "#22d3ee";
 // Dashed ring for a router that's an endpoint of a peering with an open L1
 // (fiber) incident, but has nothing of its own in triage - distinguishes
 // "symptomatic of an upstream physical fault" from the solid ALERT_STROKE
@@ -160,6 +164,7 @@ function RouterMarker({
   // needs_attention (solid ring, own incident in triage) always wins over
   // symptomatic (dashed ring, upstream fiber cut correlated to this router).
   const showSymptomaticRing = symptomatic && !r.needs_attention;
+  const recovered = r.device_cleared && r.status === "up";
   return (
     <CircleMarker
       center={[r.latitude, r.longitude]}
@@ -175,7 +180,7 @@ function RouterMarker({
               : MARKER_STROKE,
         weight: linkSelected ? 3 : alerting ? 3 : showSymptomaticRing ? 2 : 1.25,
         dashArray: showSymptomaticRing && !linkSelected ? "3 3" : undefined,
-        fillColor: statusColor[r.status] || statusColor.unknown,
+        fillColor: recovered ? RECOVERED_COLOR : statusColor[r.status] || statusColor.unknown,
         fillOpacity: shouldBlink ? (blinkOn ? 1 : 0.35) : fillOpacity,
       }}
     >
@@ -197,6 +202,11 @@ function RouterMarker({
             {r.needs_attention && (
               <div style={{ color: ALERT_STROKE, fontWeight: 600, marginTop: "0.25rem" }}>
                 ⚠ incident in triage — needs attention
+              </div>
+            )}
+            {recovered && (
+              <div style={{ color: RECOVERED_COLOR, fontWeight: 600, marginTop: "0.25rem" }}>
+                ✓ recovered (link up) — incident still open, awaiting engineer sign-off
               </div>
             )}
             {connectionIssue && !r.needs_attention && (
