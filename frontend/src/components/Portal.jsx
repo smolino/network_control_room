@@ -13,10 +13,10 @@ const FEATURES = [
       "A fiber cut raises one optical alarm and a burst of router-side symptoms. A Neo4j topology graph maps every interface to the fiber span carrying it, so the cut becomes a single root-cause incident and the symptoms are suppressed under it.",
   },
   {
-    icon: "⚡",
-    title: "Safe, auditable auto-heal",
+    icon: "🔒",
+    title: "Secure, role-based access",
     text:
-      "Rule-based playbooks bounce interfaces, reset BGP sessions or restart processes. The running-config is always backed up first. Every action is logged, and a fix only counts once the device sends its clear trap.",
+      "Viewer, operator and admin roles are enforced on the server, with two-factor sign-in. Every acknowledgement, dispatch and resolution is recorded with who did it, the reason and a note.",
   },
   {
     icon: "📍",
@@ -57,7 +57,7 @@ const AUDIENCES = [
     tag: "Operations",
     title: "Network Operations Centers",
     text:
-      "Shift teams that face alarm storms. Root causes and symptoms are separated, routine faults are fixed automatically, and engineers get a short, prioritised queue instead of a stream of traps.",
+      "Shift teams that face alarm storms. Root causes and symptoms are separated, and engineers get a short, prioritised queue instead of a stream of traps.",
     points: ["Less alarm fatigue", "Clear ownership per incident", "Full audit trail"],
   },
   {
@@ -73,22 +73,21 @@ const PIPELINE = [
   { step: "01", title: "Mediation", text: "Receives SNMP traps from the routers and publishes them to Kafka." },
   { step: "02", title: "Normalization", text: "Maps vendor OIDs to a common alarm model with a layer (L1 / L3)." },
   { step: "03", title: "Correlation", text: "Walks the Neo4j topology graph to link symptoms to their root cause." },
-  { step: "04", title: "Remediation", text: "Backs up the config, runs or declines a playbook, and confirms the fix." },
-  { step: "05", title: "Human review", text: "Sends what needs a person to a live, prioritised board." },
+  { step: "04", title: "Human review", text: "Sends what needs a person to a live, prioritised board." },
 ];
 
 const VIDEOS = [
   {
     id: "wLHMmDIcE94",
     tag: "Product demo",
-    title: "AI-free Telco NOC demo: L1/L3 root-cause correlation and auto-heal",
-    text: "Walks through the console: a fiber cut is correlated to its symptoms, auto-heal runs safely, and incidents move through the Human Review board.",
+    title: "AI-free Telco NOC demo: L1/L3 root-cause correlation",
+    text: "Walks through the console: a fiber cut is correlated to its symptoms, the crew is pointed to the faulty span, and incidents move through the Human Review board.",
   },
   {
     id: "ykB87Gxih6w",
     tag: "Architecture",
     title: "Telco NOC architecture explained (Kafka + Neo4j)",
-    text: "How mediation, normalization, correlation and remediation fit together, and how the topology graph finds the root cause.",
+    text: "How mediation, normalization and correlation fit together, and how the topology graph finds the root cause.",
   },
 ];
 
@@ -179,7 +178,7 @@ function HeroVisual() {
       <div className="pv-card pv-card-sym">
         <span className="pv-badge pv-badge-l3">L3 · SUPPRESSED</span>
         <strong>2 × IS-IS adjacency down</strong>
-        <small>symptoms linked · no auto-heal</small>
+        <small>linked to the fiber cut</small>
       </div>
     </div>
   );
@@ -224,8 +223,8 @@ export default function Portal({ onLoginClick }) {
             </h1>
             <p className="portal-lead">
               Network Control Room watches your router fleet in real time. It links physical-layer faults to the
-              control-plane symptoms they cause, fixes routine problems safely, and shows your engineers which
-              customers are affected and where to send the crew.
+              control-plane symptoms they cause, and shows your engineers which customers are affected and where
+              to send the crew.
             </p>
             <div className="portal-cta-row">
               <a href="/login" className="portal-btn portal-btn-primary portal-btn-lg" onClick={goLogin}>
@@ -244,7 +243,7 @@ export default function Portal({ onLoginClick }) {
         <div className="portal-strip-inner">
           <div><strong>L1 + L3</strong><span>layered alarm model</span></div>
           <div><strong>Real time</strong><span>Kafka event pipeline</span></div>
-          <div><strong>Backup-first</strong><span>every auto-heal action</span></div>
+          <div><strong>Span-level</strong><span>fiber fault location</span></div>
           <div><strong>P1–P4</strong><span>priority from customer impact</span></div>
         </div>
       </section>
@@ -283,12 +282,11 @@ export default function Portal({ onLoginClick }) {
             <p>
               When a physical span fails, every router that uses it reports its own symptoms: interfaces flapping,
               adjacencies dropping, BGP sessions resetting. Traditional monitoring shows each one as a separate
-              problem. Automation then makes things worse by bouncing interfaces that were never broken.
+              problem, and engineers lose time investigating routers that were never broken.
             </p>
             <p>
               Network Control Room knows which fiber carries which interface. It raises <em>one</em> incident for
-              the cut, suppresses the symptoms beneath it, and keeps automation away from anything a config push
-              can't fix.
+              the cut, suppresses the symptoms beneath it, and tells the field crew exactly which span to repair.
             </p>
           </div>
         </div>
@@ -366,7 +364,7 @@ export default function Portal({ onLoginClick }) {
           <ul className="portal-benefit-list">
             <li><strong>Shorter time to resolve:</strong> engineers start from the root cause, not from the loudest symptom.</li>
             <li><strong>Fewer truck rolls:</strong> crews are sent to the exact span between two repeaters.</li>
-            <li><strong>Automation you can trust:</strong> config is backed up before every change, and hardware, security and fiber faults are never touched.</li>
+            <li><strong>Clear accountability:</strong> every incident shows who owns it, which team it was dispatched to, and how it was resolved.</li>
             <li><strong>Customer-first priorities:</strong> outages that take customers offline go to the top of the queue.</li>
             <li><strong>Secure by default:</strong> role-based access (viewer, operator, admin) and two-factor sign-in.</li>
           </ul>
@@ -385,7 +383,7 @@ export default function Portal({ onLoginClick }) {
       <footer className="portal-footer">
         <div className="portal-container portal-footer-inner">
           <span>© {new Date().getFullYear()} Network Control Room</span>
-          <span>Network assurance · Root-cause correlation · Auto-heal</span>
+          <span>Network assurance · Root-cause correlation · Customer impact</span>
         </div>
       </footer>
     </div>
