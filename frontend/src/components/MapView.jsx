@@ -5,6 +5,13 @@ import { seedBgpPeerings } from "../api.js";
 import { useHasRole } from "../auth.js";
 import { haversineKm, REPEATER_SPACING_KM } from "../geo.js";
 
+// The dashboard floats its layer toggles and KPI cards over the top of the map and its charts
+// over the bottom (z-index above Leaflet's panes), so a popup opened near
+// either edge would be hidden behind them. Leaflet pans the map to keep a
+// popup clear of these margins (pixels: [x, y]).
+const POPUP_PAD_TOP_LEFT = [24, 200];
+const POPUP_PAD_BOTTOM_RIGHT = [24, 210];
+
 // Marker fill colors - kept vivid so routers pop against any tile background.
 const STATUS_COLOR = {
   up: "#22c55e",
@@ -175,7 +182,7 @@ function RouterMarker({
           call below) - clicking one there selects it for a BGP link instead
           of opening this popup, so it's suppressed while that's active. */}
       {!linkMode && (
-        <Popup>
+        <Popup autoPanPaddingTopLeft={POPUP_PAD_TOP_LEFT} autoPanPaddingBottomRight={POPUP_PAD_BOTTOM_RIGHT}>
           <div style={{ fontSize: "0.85rem" }}>
             <strong>{r.hostname}</strong>
             <div>{r.site_name} — {r.city}, {r.country}</div>
