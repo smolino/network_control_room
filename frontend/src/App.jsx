@@ -14,6 +14,7 @@ import MapView from "./components/MapView.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import RouterList from "./components/RouterList.jsx";
 import AddFleet from "./components/AddFleet.jsx";
+import MibManager from "./components/MibManager.jsx";
 import IncidentList from "./components/IncidentList.jsx";
 import RouterDetail from "./components/RouterDetail.jsx";
 import HumanReview from "./components/HumanReview.jsx";
@@ -26,6 +27,7 @@ const TABS = [
   { key: "dashboard", label: "Dashboard" },
   { key: "routers", label: "Routers" },
   { key: "add-fleet", label: "Add Fleet", minRole: "admin" },
+  { key: "mibs", label: "MIBs & Traps" },
   { key: "incidents", label: "Incidents" },
   { key: "customer-incidents", label: "Customer Incidents" },
   { key: "human-review", label: "Human Review" },
@@ -407,6 +409,7 @@ export default function App() {
             />
           )}
           {activeView === "add-fleet" && <AddFleet routers={routers} onFleetChanged={reloadAll} />}
+          {activeView === "mibs" && <MibManager />}
           {activeView === "incidents" && (
             <IncidentList
               incidents={incidents}

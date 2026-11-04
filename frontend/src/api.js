@@ -248,6 +248,46 @@ export function deleteTeam(id) {
   return deleteJSON(`/teams/${id}`);
 }
 
+// --- MIBs & custom traps (backend/app/api/mibs.py) ---
+
+export function fetchMibOptions() {
+  return getJSON("/mibs/options");
+}
+
+export function fetchMibModules() {
+  return getJSON("/mibs/modules");
+}
+
+// files: [{ filename, content }] - MIB text read in the browser.
+export function importMibs(appliance, files) {
+  return postJSON("/mibs/modules", { appliance, files });
+}
+
+export function deleteMibModule(id) {
+  return deleteJSON(`/mibs/modules/${id}`);
+}
+
+export function searchTraps({ q = "", source = "all", limit = 100 } = {}) {
+  const params = new URLSearchParams({ q, source, limit: String(limit) });
+  return getJSON(`/mibs/traps?${params}`);
+}
+
+export function fetchTrapRules() {
+  return getJSON("/mibs/rules");
+}
+
+export function createTrapRule(rule) {
+  return postJSON("/mibs/rules", rule);
+}
+
+export function updateTrapRule(id, rule) {
+  return putJSON(`/mibs/rules/${id}`, rule);
+}
+
+export function deleteTrapRule(id) {
+  return deleteJSON(`/mibs/rules/${id}`);
+}
+
 export function fetchSimulationStatus() {
   return getJSON("/simulation/status");
 }

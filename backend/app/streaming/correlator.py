@@ -65,7 +65,7 @@ def _connect() -> tuple[KafkaConsumer, KafkaProducer]:
 
 def _process(db, message: dict) -> dict | None:
     # classify_and_store re-derives trap_name/incident_type/severity from
-    # trap_oid itself (via the same TRAP_OID_MAP the normalizer already
+    # trap_oid itself (via the same lookup_trap the normalizer already
     # consulted) rather than trusting message["incident_type"] etc. - the
     # normalizer's added fields are still published for
     # observability/CAM-shape fidelity, just not the source of truth this

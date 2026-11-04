@@ -19,7 +19,7 @@ from kafka.errors import NoBrokersAvailable
 
 from app.config import settings
 from app.models import INCIDENT_LAYER, AlarmLayer
-from app.snmp.oid_map import TRAP_OID_MAP, UNKNOWN_TRAP
+from app.snmp.oid_map import lookup_trap
 from app.streaming.topics import NORM_ALARMS, RAW_ALARMS
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ def _connect() -> tuple[KafkaConsumer, KafkaProducer]:
 
 
 def normalize(message: dict) -> dict:
-    trap_name, incident_type, severity = TRAP_OID_MAP.get(message["trap_oid"], UNKNOWN_TRAP)
+    trap_name, incident_type, severity = lookup_trap(message["trap_oid"])
     layer = INCIDENT_LAYER.get(incident_type, AlarmLayer.L3)
     return {
         **message,

@@ -7,6 +7,7 @@ purposes without requiring a full MIB compiler.
 """
 
 from app.models import IncidentType
+from app.snmp import trap_catalog
 
 # Standard SNMPv2-MIB traps
 LINK_DOWN_OID = "1.3.6.1.6.3.1.1.5.3"
@@ -85,3 +86,19 @@ TRAP_OID_MAP: dict[str, tuple[str, IncidentType, str]] = {
 }
 
 UNKNOWN_TRAP = ("unknownTrap", IncidentType.UNKNOWN, "info")
+
+
+def lookup_trap(oid: str) -> tuple[str, IncidentType, str]:
+    """(trap_name, incident_type, severity) for a trap OID. Traps with a
+    classification rule above keep it; any other trap stays an alarm only
+    (IncidentType.UNKNOWN, "info") but is named from the Cisco MIB trap
+    catalogue - e.g. "cefcFRURemoved" rather than "unknownTrap" - so the
+    alarm history is readable. (Bare name: TrapEvent.trap_name is 64 chars,
+    and the longest catalogued name is 57.)"""
+    known = TRAP_OID_MAP.get(oid)
+    if known:
+        return known
+    definition = trap_catalog.lookup(oid)
+    if definition:
+        return (definition["name"], IncidentType.UNKNOWN, "info")
+    return UNKNOWN_TRAP

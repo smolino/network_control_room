@@ -14,6 +14,7 @@ from sqlalchemy import (
     event,
     func,
 )
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import relationship
 
 from app.config import settings
@@ -467,3 +468,77 @@ class AppSetting(Base):
 
     key = Column(String(64), primary_key=True)
     value = Column(String(255), nullable=False)
+
+
+class MibModule(Base):
+    """A MIB file uploaded in the "MIBs & Traps" tab for some appliance
+    (Juniper, Huawei, Nokia, an optical shelf, ...). The source is kept so
+    every import can re-resolve all uploaded modules together - a vendor's
+    SMI root uploaded later fixes the traps of modules uploaded before it.
+    See app.snmp.mib_registry."""
+
+    __tablename__ = "mib_modules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(128), nullable=False, unique=True, index=True)
+    appliance = Column(String(128), nullable=False, default="")
+    filename = Column(String(255), nullable=False)
+    # Big vendor MIBs exceed MySQL's 64 KB TEXT; Postgres/SQLite TEXT is unbounded.
+    source = Column(Text().with_variant(MEDIUMTEXT(), "mysql", "mariadb"), nullable=False)
+    trap_count = Column(Integer, nullable=False, default=0)
+    unresolved_count = Column(Integer, nullable=False, default=0)
+    # JSON list of {"name", "missing"} for traps whose OID couldn't be resolved.
+    unresolved = Column(Text, nullable=True)
+    uploaded_by = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    traps = relationship("MibTrap", back_populates="module", cascade="all, delete-orphan")
+
+
+class MibTrap(Base):
+    """One trap defined by an uploaded MIB, with its resolved OID.
+    Regenerated from MibModule.source on every import/delete."""
+
+    __tablename__ = "mib_traps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    oid = Column(String(255), nullable=False, unique=True, index=True)
+    name = Column(String(128), nullable=False, index=True)
+    module_id = Column(Integer, ForeignKey("mib_modules.id", ondelete="CASCADE"), nullable=False, index=True)
+    objects = Column(Text, nullable=True)  # JSON list of varbind object names
+    status = Column(String(32), nullable=False, default="current")
+    description = Column(Text, nullable=True)
+
+    module = relationship("MibModule", back_populates="traps")
+
+
+class TrapRuleAction(str, enum.Enum):
+    RAISE = "raise"  # open (or bump) an incident of incident_type
+    CLEAR = "clear"  # resolve the open incident of incident_type on the same router/interface
+    ALARM = "alarm"  # store as an alarm only, under this rule's name/severity
+
+
+class TrapRule(Base):
+    """A custom trap: a user-defined OID -> name/severity/action rule,
+    created from scratch or from an imported/catalogued trap. Consulted by
+    app.snmp.classifier for any OID the built-in TRAP_OID_MAP doesn't
+    handle (built-in OIDs can't be overridden). See app.snmp.mib_registry."""
+
+    __tablename__ = "trap_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    oid = Column(String(255), nullable=False, unique=True, index=True)
+    name = Column(String(64), nullable=False)  # becomes TrapEvent.trap_name (64 chars)
+    description = Column(Text, nullable=True)
+    appliance = Column(String(128), nullable=False, default="")
+    action = Column(Enum(TrapRuleAction), nullable=False, default=TrapRuleAction.ALARM)
+    incident_type = Column(Enum(IncidentType), nullable=True)  # required for RAISE/CLEAR
+    severity = Column(String(16), nullable=False, default="warning")
+    # Optional varbind OID (or OID prefix, e.g. ifName 1.3.6.1.2.1.31.1.1.1.1)
+    # whose value names the interface the trap is about.
+    interface_varbind = Column(String(255), nullable=True)
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_by = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
