@@ -809,3 +809,66 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ---- contact ---- */
+.portal-contact-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 48px;
+  align-items: center;
+}
+
+.portal-contact-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.4rem 1.6rem;
+  border-radius: 16px;
+  background:
+    linear-gradient(var(--p-bg), var(--p-bg)) padding-box,
+    linear-gradient(135deg, #3b82f6, #22d3ee) border-box;
+  border: 1px solid transparent;
+  box-shadow: 0 20px 50px rgba(59, 130, 246, 0.15);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  min-width: 0;
+}
+
+.portal-contact-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 24px 60px rgba(59, 130, 246, 0.3);
+}
+
+.portal-contact-icon {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-size: 1.3rem;
+  color: #fff;
+  background: linear-gradient(135deg, #3b82f6, #22d3ee);
+}
+
+.portal-contact-card small {
+  display: block;
+  color: var(--p-muted);
+  font-size: 0.8rem;
+}
+
+.portal-contact-card strong {
+  display: block;
+  font-size: 1.05rem;
+  overflow-wrap: anywhere;
+}
+
+.portal-footer-mail:hover {
+  color: var(--p-text);
+}
+
+@media (max-width: 1000px) {
+  .portal-contact-inner {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 28px;
+  }
+}

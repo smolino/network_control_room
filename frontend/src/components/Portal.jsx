@@ -2,6 +2,9 @@ import { useState } from "react";
 import { NetworkBackground } from "./Login.jsx";
 import "./portal.css";
 
+const CONTACT_EMAIL = "sergio.molino@point2point.org.uk";
+const CONTACT_HREF = `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent("Network Control Room - product information")}`;
+
 // Public product page shown before sign-in. Purely static - it makes no API
 // calls, so it works for anonymous visitors.
 
@@ -205,6 +208,7 @@ export default function Portal({ onLoginClick }) {
             <a href="#features">Platform</a>
             <a href="#how">How it works</a>
             <a href="#customers">Who it's for</a>
+            <a href="#contact">Contact</a>
           </div>
           <a href="/login" className="portal-btn portal-btn-primary portal-nav-login" onClick={goLogin}>
             Log in
@@ -380,10 +384,30 @@ export default function Portal({ onLoginClick }) {
         </div>
       </section>
 
+      <section className="portal-section portal-alt portal-contact" id="contact">
+        <div className="portal-container portal-contact-inner">
+          <div>
+            <span className="portal-eyebrow">Contact</span>
+            <h2>Want to know more about the product?</h2>
+            <p className="portal-section-sub">
+              Ask for a demo, pricing, or how Network Control Room fits your network. We'll get back to you.
+            </p>
+          </div>
+          <a href={CONTACT_HREF} className="portal-contact-card">
+            <span className="portal-contact-icon" aria-hidden="true">✉</span>
+            <span>
+              <small>Email us</small>
+              <strong>{CONTACT_EMAIL}</strong>
+            </span>
+          </a>
+        </div>
+      </section>
+
       <footer className="portal-footer">
         <div className="portal-container portal-footer-inner">
           <span>© {new Date().getFullYear()} Network Control Room</span>
           <span>Network assurance · Root-cause correlation · Customer impact</span>
+          <a href={CONTACT_HREF} className="portal-footer-mail">{CONTACT_EMAIL}</a>
         </div>
       </footer>
     </div>
