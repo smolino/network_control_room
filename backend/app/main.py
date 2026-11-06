@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, backups, bgp, geocode, incidents, router_models, routers, simulation, stats, teams, traps, users
+from app.api import auth, backups, bgp, geocode, incidents, mibs, router_models, routers, simulation, stats, teams, traps, users
 from app.auth import authenticate_websocket_token, require_viewer, seed_default_admin
 from app.config import settings
 from app.db import SessionLocal, init_db
@@ -58,7 +58,7 @@ app.add_middleware(
 # anything add a stricter operator/admin check of their own (see app.auth).
 # auth (login), simulation (polled by the simulator) and users (admin-only
 # throughout) handle access themselves.
-for data_router in (routers, incidents, traps, stats, backups, bgp, teams, router_models, geocode):
+for data_router in (routers, incidents, traps, stats, backups, bgp, teams, router_models, geocode, mibs):
     app.include_router(data_router.router, dependencies=[Depends(require_viewer)])
 app.include_router(auth.router)
 app.include_router(users.router)

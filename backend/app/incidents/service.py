@@ -12,7 +12,12 @@ Lifecycle (see models.IncidentStage):
     TRIAGE ─ ack ─▶ ACKNOWLEDGED ─ send to team ─▶ DISPATCHED ─ resolve (reason) ─▶ RESOLVED
 
 A clear trap (linkUp, isisAdjacencyUp, bgpEstablished, opticalSignalRestored)
-resolves an incident from any open stage. When a root cause resolves, its
+resolves an incident from any open stage.
+
+With auto-heal turned off (Settings > Simulation, see auto_heal_enabled)
+nothing is resolved by the system: a settled NEW incident goes straight to
+TRIAGE without a playbook, and clear traps leave incidents open - every
+incident stays with the engineers until one of them resolves it. When a root cause resolves, its
 open symptoms either go with it (a human resolved it) or are released back
 to NEW to be judged on their own (the device cleared it - anything still
 down a settle window later is a separate problem).
@@ -40,6 +45,7 @@ from app.impact import Impact, compute_impacts
 from app.models import (
     USER_RESOLUTION_REASONS,
     AlarmLayer,
+    AppSetting,
     Incident,
     IncidentStage,
     IncidentStatus,
@@ -78,6 +84,11 @@ LINK_TYPES = (IncidentType.LINK_DOWN, IncidentType.LINK_FLAP)
 
 SYSTEM = "system"
 
+# AppSetting key for the auto-heal switch - read from the database each
+# time rather than cached, since it's set through the backend API but acted
+# on here in the correlator process too.
+AUTO_HEAL = "auto_heal"
+
 _TOUCHED_INCIDENTS = "ncr_touched_incidents"
 _TOUCHED_ROUTERS = "ncr_touched_routers"
 
@@ -91,6 +102,11 @@ def is_incident_type(incident_type: IncidentType) -> bool:
     else (linkUp, coldStart, unknown traps, ...) stays an alarm - a
     TrapEvent row - and never shows up as an incident."""
     return incident_type in AUTO_HEAL_ELIGIBLE_TYPES
+
+
+def auto_heal_enabled(db: Session) -> bool:
+    row = db.get(AppSetting, AUTO_HEAL)
+    return row is None or row.value == "true"
 
 
 def has_clear_signal(incident: Incident) -> bool:
@@ -191,6 +207,8 @@ def open_or_bump(
     incident = query.first()
     if incident:
         incident.trap_count += 1
+        # The condition is back - it's no longer "cleared by the device".
+        incident.device_cleared_at = None
         touch(db, incident)
         return incident, False
 
@@ -241,7 +259,8 @@ def refresh_router_link_status(db: Session, router: Router) -> None:
     """Flips the router back to UP once no open LINK_DOWN/LINK_FLAP incident
     is keeping it down/flapping - after a linkUp, or after one of those
     incidents is resolved by hand (without this, a router resolved that way
-    would stay DOWN forever, since nothing else would ever clear it)."""
+    would stay DOWN forever, since nothing else would ever clear it).
+    Incidents the device has already cleared don't hold it down."""
     if router.status == RouterStatus.UP:
         return
     still_open = (
@@ -250,6 +269,8 @@ def refresh_router_link_status(db: Session, router: Router) -> None:
             Incident.router_id == router.id,
             Incident.status == IncidentStatus.OPEN,
             Incident.incident_type.in_(LINK_TYPES),
+            # Cleared by the device (linkUp) but still open for review.
+            Incident.device_cleared_at.is_(None),
         )
         .count()
     )
@@ -299,7 +320,9 @@ def clear(
 ) -> list[Incident]:
     """The device reported the condition gone (linkUp, isisAdjacencyUp,
     bgpEstablished) - resolves the matching open incidents, whatever stage
-    they're in."""
+    they're in. With auto-heal off they stay open for an engineer, only
+    marked device_cleared_at (the router shows as recovered, pending
+    review); returns just the incidents actually resolved."""
     incidents = (
         db.query(Incident)
         .filter(
@@ -310,6 +333,12 @@ def clear(
         )
         .all()
     )
+    if not auto_heal_enabled(db):
+        for incident in incidents:
+            if incident.device_cleared_at is None:
+                incident.device_cleared_at = now
+                touch(db, incident)
+        return []
     for incident in incidents:
         _resolve(db, incident, now, ResolutionReason.AUTO_CLEARED, SYSTEM)
     return incidents
@@ -318,6 +347,8 @@ def clear(
 def clear_peering(db: Session, peering_id: int, incident_type: IncidentType, now: datetime) -> list[Incident]:
     """Peering-scoped clear() - for the L1 fiber incident, which isn't
     attached to any one interface."""
+    if not auto_heal_enabled(db):
+        return []
     incidents = (
         db.query(Incident)
         .filter(
@@ -418,7 +449,8 @@ def _lock_for_sweep(query):
 
 
 def sweep(db: Session, now: datetime) -> dict | None:
-    """Runs auto-heal on incidents whose settle window has passed and
+    """Runs auto-heal (or, with it off, hands straight to triage) on
+    incidents whose settle window has passed and
     escalates fixes that were never confirmed by a clear trap. Commits, and
     returns the WebSocket event for whatever moved (None if nothing did)."""
     settled = now - timedelta(seconds=settings.incident_settle_seconds)
@@ -433,8 +465,13 @@ def sweep(db: Session, now: datetime) -> dict | None:
         .order_by(Incident.stage_changed_at.asc())
         .limit(SWEEP_BATCH)
     ).all()
+    auto_heal = auto_heal_enabled(db) if ready else True
     for incident in ready:
-        _run_auto_heal(db, incident, now)
+        if auto_heal:
+            _run_auto_heal(db, incident, now)
+        else:
+            _set_stage(db, incident, IncidentStage.TRIAGE, now)
+            touch_router(db, incident.router)
 
     unconfirmed_since = now - timedelta(seconds=settings.incident_monitoring_timeout_seconds)
     overdue = _lock_for_sweep(
@@ -464,6 +501,19 @@ def needs_attention_router_ids(db: Session, router_ids: list[int] | None = None)
     query = (
         db.query(Incident.router_id)
         .filter(Incident.status == IncidentStatus.OPEN, Incident.stage == IncidentStage.TRIAGE)
+        .distinct()
+    )
+    if router_ids is not None:
+        query = query.filter(Incident.router_id.in_(router_ids))
+    return {row[0] for row in query.all()}
+
+
+def device_cleared_router_ids(db: Session, router_ids: list[int] | None = None) -> set[int]:
+    """Routers with an open incident the device itself has cleared (see
+    clear) - recovered, waiting for an engineer to confirm."""
+    query = (
+        db.query(Incident.router_id)
+        .filter(Incident.status == IncidentStatus.OPEN, Incident.device_cleared_at.isnot(None))
         .distinct()
     )
     if router_ids is not None:
@@ -535,12 +585,13 @@ def serialize(db: Session, incidents: list[Incident]) -> list[IncidentOut]:
     return out
 
 
-def router_payload(router: Router, needs_attention: bool) -> dict:
+def router_payload(router: Router, needs_attention: bool, device_cleared: bool = False) -> dict:
     return {
         "id": router.id,
         "hostname": router.hostname,
         "status": router.status.value,
         "needs_attention": needs_attention,
+        "device_cleared": device_cleared,
         "router_type": router.router_type.value,
     }
 
@@ -557,10 +608,11 @@ def pop_event(db: Session, event_type: str = "incident_updated", routers: list[R
     if not incidents and not touched_routers:
         return None
     attention = needs_attention_router_ids(db, list(touched_routers))
+    cleared = device_cleared_router_ids(db, list(touched_routers))
     return {
         "type": event_type,
         "incidents": [item.model_dump(mode="json") for item in serialize(db, incidents)],
-        "routers": [router_payload(r, r.id in attention) for r in touched_routers.values()],
+        "routers": [router_payload(r, r.id in attention, r.id in cleared) for r in touched_routers.values()],
         **extra,
     }
 

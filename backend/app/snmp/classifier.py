@@ -6,7 +6,8 @@ from app.bgp_topology import build_established_adjacency, shortest_reroute_path
 from app.bundles import update_member_and_bundle
 from app.fault_location import describe_fault, locate_fault
 from app.incidents import service as incident_service
-from app.models import BgpPeering, BgpSessionStatus, BundleStatus, IncidentType, Router, RouterStatus, TrapEvent
+from app.models import BgpPeering, BgpSessionStatus, BundleStatus, IncidentType, Router, RouterStatus, TrapEvent, TrapRuleAction
+from app.snmp import mib_registry
 from app.snmp.flapping import evaluate_isis_adjacency_event, evaluate_link_event
 from app.snmp.oid_map import (
     BGP_ESTABLISHED_OID,
@@ -22,7 +23,7 @@ from app.snmp.oid_map import (
     LINK_UP_OID,
     ROUTER_ID_OID,
     TRAP_OID_MAP,
-    UNKNOWN_TRAP,
+    lookup_trap,
 )
 
 
@@ -100,7 +101,18 @@ def classify_and_store(
     if router is None:
         return None
 
-    trap_name, incident_type, severity = TRAP_OID_MAP.get(trap_oid, UNKNOWN_TRAP)
+    trap_name, incident_type, severity = lookup_trap(trap_oid)
+    # Custom trap rules and uploaded MIBs (the "MIBs & Traps" tab) only
+    # apply to OIDs the built-in TRAP_OID_MAP doesn't handle.
+    rule = None
+    if trap_oid not in TRAP_OID_MAP:
+        rule = mib_registry.rule_for(db, trap_oid)
+        if rule is not None:
+            trap_name, severity = rule.name, rule.severity
+            incident_type = rule.incident_type if rule.action == TrapRuleAction.RAISE else IncidentType.UNKNOWN
+            interface_name = interface_name or mib_registry.interface_from_varbinds(rule, varbinds)
+        else:
+            trap_name = mib_registry.imported_name(db, trap_oid) or trap_name
     now = datetime.now(timezone.utc)
     router.last_seen_at = now
 
@@ -140,8 +152,13 @@ def classify_and_store(
         # peering - peering-scoped, not router+interface-scoped, since a
         # fiber cut isn't attached to any one interface. Dropped without a
         # broadcast if it's already resolved or the peering vanished, same
-        # as any other event that arrives too late to matter.
-        if peering_id is None or not incident_service.clear_peering(db, peering_id, IncidentType.OPTICAL_ALARM, now):
+        # as any other event that arrives too late to matter. With auto-heal
+        # off nothing is resolved, but the alarm is still kept so engineers
+        # can see the signal came back.
+        if peering_id is None or (
+            not incident_service.clear_peering(db, peering_id, IncidentType.OPTICAL_ALARM, now)
+            and incident_service.auto_heal_enabled(db)
+        ):
             db.rollback()
             return None
     elif trap_oid == BGP_ESTABLISHED_OID:
@@ -149,6 +166,8 @@ def classify_and_store(
             db, router, _extract_varbind(varbinds, BGP_PEER_OID), BgpSessionStatus.ESTABLISHED, now
         )
         incident_service.clear(db, router, [IncidentType.BGP_STATE_CHANGE], interface_name, now)
+    elif rule is not None and rule.action == TrapRuleAction.CLEAR:
+        incident_service.clear(db, router, [rule.incident_type], interface_name, now)
     else:
         if incident_type in (IncidentType.COLD_START, IncidentType.WARM_START):
             router.status = RouterStatus.UP

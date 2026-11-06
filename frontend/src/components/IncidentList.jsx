@@ -22,7 +22,21 @@ const STAGE_BADGE = {
 
 export function StageBadge({ incident }) {
   const stage = incident.stage ?? incident.status;
-  return <span className={`badge ${STAGE_BADGE[stage] ?? incident.status}`}>{stage}</span>;
+  const badge = <span className={`badge ${STAGE_BADGE[stage] ?? incident.status}`}>{stage}</span>;
+  // The device reported the problem gone (e.g. linkUp) but the incident is
+  // still waiting for an engineer to sign it off.
+  if (incident.status !== "open" || !incident.device_cleared_at) return badge;
+  return (
+    <>
+      {badge}{" "}
+      <span
+        className="badge recovered"
+        title={`Cleared by the device at ${new Date(incident.device_cleared_at).toLocaleString()} - resolve to close it`}
+      >
+        recovered
+      </span>
+    </>
+  );
 }
 
 const PRIORITY_RANK = { P1: 1, P2: 2, P3: 3, P4: 4 };

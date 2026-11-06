@@ -14,18 +14,20 @@ import MapView from "./components/MapView.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import RouterList from "./components/RouterList.jsx";
 import AddFleet from "./components/AddFleet.jsx";
+import MibManager from "./components/MibManager.jsx";
 import IncidentList from "./components/IncidentList.jsx";
 import RouterDetail from "./components/RouterDetail.jsx";
 import HumanReview from "./components/HumanReview.jsx";
 import Login from "./components/Login.jsx";
+import Portal from "./components/Portal.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 
 // minRole only hides tabs the backend would refuse anyway (see app/auth.py).
 const TABS = [
-  { key: "map", label: "Map" },
   { key: "dashboard", label: "Dashboard" },
   { key: "routers", label: "Routers" },
   { key: "add-fleet", label: "Add Fleet", minRole: "admin" },
+  { key: "mibs", label: "MIBs & Traps" },
   { key: "incidents", label: "Incidents" },
   { key: "customer-incidents", label: "Customer Incidents" },
   { key: "human-review", label: "Human Review" },
@@ -69,7 +71,14 @@ function patchRouters(prev, updates) {
   if (!updates?.length) return prev;
   const byId = new Map(updates.map((r) => [r.id, r]));
   return prev.map((r) =>
-    byId.has(r.id) ? { ...r, status: byId.get(r.id).status, needs_attention: byId.get(r.id).needs_attention } : r
+    byId.has(r.id)
+      ? {
+          ...r,
+          status: byId.get(r.id).status,
+          needs_attention: byId.get(r.id).needs_attention,
+          device_cleared: byId.get(r.id).device_cleared,
+        }
+      : r
   );
 }
 
@@ -84,8 +93,13 @@ export default function App() {
   const [session, setSession] = useState(loadSession);
   const currentUser = session?.user ?? null;
   const authenticated = !!currentUser;
+  // Signed-out visitors land on the public portal; /login (or an emailed
+  // ?incident= link) goes straight to the sign-in form.
+  const [showLogin, setShowLogin] = useState(
+    () => window.location.pathname === "/login" || !!incidentIdFromUrl()
+  );
   const [focusIncidentId, setFocusIncidentId] = useState(incidentIdFromUrl);
-  const [view, setView] = useState(() => (incidentIdFromUrl() ? "human-review" : "map"));
+  const [view, setView] = useState(() => (incidentIdFromUrl() ? "human-review" : "dashboard"));
   const [routers, setRouters] = useState([]);
   const [incidents, setIncidents] = useState([]);
   const [customerIncidents, setCustomerIncidents] = useState([]);
@@ -106,11 +120,31 @@ export default function App() {
   const handleSessionChanged = useCallback((next) => {
     saveSession(next);
     setSession(next);
+    if (window.location.pathname === "/login") window.history.replaceState(null, "", "/");
+  }, []);
+
+  const openLogin = useCallback(() => {
+    window.history.pushState(null, "", "/login");
+    setShowLogin(true);
+  }, []);
+
+  const openPortal = useCallback(() => {
+    window.history.pushState(null, "", "/");
+    setShowLogin(false);
+  }, []);
+
+  // Browser back/forward between the portal and /login.
+  useEffect(() => {
+    const onPop = () => setShowLogin(window.location.pathname === "/login");
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
   }, []);
 
   const logout = useCallback(() => {
     clearSession();
     setSession(null);
+    setShowLogin(true);
+    window.history.replaceState(null, "", "/login");
     setImpactHighlight(null);
     setFaultHighlight(null);
   }, []);
@@ -128,7 +162,7 @@ export default function App() {
   }, [logout]);
 
   const visibleTabs = TABS.filter((t) => !t.minRole || hasRole(currentUser, t.minRole));
-  const activeView = visibleTabs.some((t) => t.key === view) ? view : "map";
+  const activeView = visibleTabs.some((t) => t.key === view) ? view : "dashboard";
 
   const showImpactOnMap = useCallback(async (incident) => {
     try {
@@ -139,7 +173,7 @@ export default function App() {
       }
       setFaultHighlight(null);
       setImpactHighlight({ incidentId: incident.id, incidentType: incident.incident_type, ...impact });
-      setView("map");
+      setView("dashboard");
     } catch (err) {
       window.alert(`Couldn't load the impact of incident #${incident.id}: ${err.message}`);
     }
@@ -149,7 +183,7 @@ export default function App() {
     if (!incident.fault_location) return;
     setImpactHighlight(null);
     setFaultHighlight({ incidentId: incident.id, status: incident.status, ...incident.fault_location });
-    setView("map");
+    setView("dashboard");
   }, []);
 
   const reloadTeams = useCallback(async () => {
@@ -271,8 +305,10 @@ export default function App() {
   const selectedRouter = routers.find((r) => r.id === selectedRouterId) || null;
 
   if (!authenticated) {
-    return (
-      <Login onLogin={handleSessionChanged} />
+    return showLogin ? (
+      <Login onLogin={handleSessionChanged} onBack={openPortal} />
+    ) : (
+      <Portal onLoginClick={openLogin} />
     );
   }
 
@@ -351,22 +387,23 @@ export default function App() {
           ))}
         </nav>
         <main>
-          {activeView === "map" && (
-            <MapView
-              routers={routers}
-              peerings={peerings}
-              onFleetChanged={reloadAll}
-              impactHighlight={impactHighlight}
-              onClearImpact={() => setImpactHighlight(null)}
-              faultHighlight={faultHighlight}
-              onClearFault={() => setFaultHighlight(null)}
-              onSelectRouter={(id) => {
-                setSelectedRouterId(id);
-                setView("routers");
-              }}
-            />
+          {activeView === "dashboard" && (
+            <Dashboard stats={stats}>
+              <MapView
+                routers={routers}
+                peerings={peerings}
+                onFleetChanged={reloadAll}
+                impactHighlight={impactHighlight}
+                onClearImpact={() => setImpactHighlight(null)}
+                faultHighlight={faultHighlight}
+                onClearFault={() => setFaultHighlight(null)}
+                onSelectRouter={(id) => {
+                  setSelectedRouterId(id);
+                  setView("routers");
+                }}
+              />
+            </Dashboard>
           )}
-          {activeView === "dashboard" && <Dashboard stats={stats} incidents={incidents} />}
           {activeView === "routers" && (
             <RouterList
               routers={routers}
@@ -379,6 +416,7 @@ export default function App() {
             />
           )}
           {activeView === "add-fleet" && <AddFleet routers={routers} onFleetChanged={reloadAll} />}
+          {activeView === "mibs" && <MibManager />}
           {activeView === "incidents" && (
             <IncidentList
               incidents={incidents}

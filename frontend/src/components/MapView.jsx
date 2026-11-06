@@ -5,6 +5,14 @@ import { seedBgpPeerings } from "../api.js";
 import { useHasRole } from "../auth.js";
 import { haversineKm, REPEATER_SPACING_KM } from "../geo.js";
 
+// Panels floated over the map (layer toggles, KPI cards, charts) sit above
+// Leaflet's panes, so a popup opened under one would be hidden. Leaflet's own
+// autoPan only keeps popups inside the map's edges, so KeepPopupsClear pans
+// the map until the popup clears every panel it overlaps, measured live
+// (the KPI cards wrap onto more rows on narrower screens).
+const MAP_OVERLAYS = "[data-map-overlay], .dash-kpi, .dash-bottom > *";
+const OVERLAY_GAP = 10;
+
 // Marker fill colors - kept vivid so routers pop against any tile background.
 const STATUS_COLOR = {
   up: "#22c55e",
@@ -57,6 +65,10 @@ const MARKER_STROKE = "#0b0f1a";
 const REPEATER_FILL = "#a855f7";
 const REPEATER_STROKE = "#581c87";
 const ALERT_STROKE = "#f97316";
+// A router whose device reported the problem gone (e.g. linkUp) while its
+// incident is still open for an engineer to confirm: up again, but not
+// signed off yet - orange, between the red of down and the green of healthy.
+const RECOVERED_COLOR = "#f97316";
 // Dashed ring for a router that's an endpoint of a peering with an open L1
 // (fiber) incident, but has nothing of its own in triage - distinguishes
 // "symptomatic of an upstream physical fault" from the solid ALERT_STROKE
@@ -152,6 +164,7 @@ function RouterMarker({
   // needs_attention (solid ring, own incident in triage) always wins over
   // symptomatic (dashed ring, upstream fiber cut correlated to this router).
   const showSymptomaticRing = symptomatic && !r.needs_attention;
+  const recovered = r.device_cleared && r.status === "up";
   return (
     <CircleMarker
       center={[r.latitude, r.longitude]}
@@ -167,7 +180,7 @@ function RouterMarker({
               : MARKER_STROKE,
         weight: linkSelected ? 3 : alerting ? 3 : showSymptomaticRing ? 2 : 1.25,
         dashArray: showSymptomaticRing && !linkSelected ? "3 3" : undefined,
-        fillColor: statusColor[r.status] || statusColor.unknown,
+        fillColor: recovered ? RECOVERED_COLOR : statusColor[r.status] || statusColor.unknown,
         fillOpacity: shouldBlink ? (blinkOn ? 1 : 0.35) : fillOpacity,
       }}
     >
@@ -189,6 +202,11 @@ function RouterMarker({
             {r.needs_attention && (
               <div style={{ color: ALERT_STROKE, fontWeight: 600, marginTop: "0.25rem" }}>
                 ⚠ incident in triage — needs attention
+              </div>
+            )}
+            {recovered && (
+              <div style={{ color: RECOVERED_COLOR, fontWeight: 600, marginTop: "0.25rem" }}>
+                ✓ recovered (link up) — incident still open, awaiting engineer sign-off
               </div>
             )}
             {connectionIssue && !r.needs_attention && (
@@ -215,6 +233,47 @@ function RouterMarker({
 
 // Zooms to the highlighted blast radius once, when it's first shown - not on
 // every routers refresh, so the operator can still pan away from it.
+function KeepPopupsClear() {
+  const map = useMap();
+  useEffect(() => {
+    let timer;
+    const clear = (popup) => {
+      const el = popup.getElement();
+      if (!el || !map.hasLayer(popup)) return;
+      const box = el.getBoundingClientRect();
+      const mapBox = map.getContainer().getBoundingClientRect();
+      const midY = mapBox.top + mapBox.height / 2;
+      let down = 0;
+      let up = 0;
+      for (const o of document.querySelectorAll(MAP_OVERLAYS)) {
+        const r = o.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const overlaps = r.left < box.right && r.right > box.left && r.top < box.bottom && r.bottom > box.top;
+        if (!overlaps) continue;
+        if (r.top + r.height / 2 < midY) down = Math.max(down, r.bottom + OVERLAY_GAP - box.top);
+        else up = Math.max(up, box.bottom - (r.top - OVERLAY_GAP));
+      }
+      if (down > 0) map.panBy([0, -down]);
+      else if (up > 0) map.panBy([0, up]);
+    };
+    // Check on the next frame (the popup is laid out by then), and once more
+    // after Leaflet's own autoPan animation. Not debounced: a blinking marker
+    // re-renders - and so re-opens - its popup every blink, which would keep
+    // pushing a debounced check back.
+    const onOpen = (e) => {
+      requestAnimationFrame(() => clear(e.popup));
+      clearTimeout(timer);
+      timer = setTimeout(() => clear(e.popup), 300);
+    };
+    map.on("popupopen", onOpen);
+    return () => {
+      clearTimeout(timer);
+      map.off("popupopen", onOpen);
+    };
+  }, [map]);
+  return null;
+}
+
 function FitToRouters({ highlightKey, points, maxZoom = 7 }) {
   const map = useMap();
   useEffect(() => {
@@ -411,6 +470,7 @@ export default function MapView({
   return (
     <div style={{ position: "relative", height: "100%", width: "100%" }}>
       <div
+        data-map-overlay
         style={{
           position: "absolute",
           top: 12,
@@ -493,9 +553,10 @@ export default function MapView({
 
       {linkMode && linkRouterA && (
         <div
+          data-map-overlay
           style={{
             position: "absolute",
-            bottom: 12,
+            bottom: "var(--map-overlay-bottom, 12px)",
             left: 50,
             zIndex: 1000,
             background: "#161c2cdd",
@@ -568,9 +629,10 @@ export default function MapView({
 
       {impactHighlight && (
         <div
+          data-map-overlay
           style={{
             position: "absolute",
-            top: 12,
+            top: "var(--map-overlay-top, 12px)",
             right: 12,
             zIndex: 1000,
             background: "#161c2cdd",
@@ -601,9 +663,10 @@ export default function MapView({
 
       {faultHighlight && (
         <div
+          data-map-overlay
           style={{
             position: "absolute",
-            top: 12,
+            top: "var(--map-overlay-top, 12px)",
             right: 12,
             zIndex: 1000,
             background: "#161c2cdd",
@@ -645,6 +708,7 @@ export default function MapView({
         preferCanvas
         style={{ height: "100%", width: "100%" }}
       >
+        <KeepPopupsClear />
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"

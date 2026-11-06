@@ -1,11 +1,24 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy import func
+from bisect import bisect_right
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.impact import impact_totals
-from app.models import Incident, IncidentStage, IncidentStatus, Router, RouterStatus, RouterType
-from app.schemas import StatsSummary
+from app.models import (
+    Incident,
+    IncidentStage,
+    IncidentStatus,
+    RemediationAction,
+    RemediationStatus,
+    Router,
+    RouterStatus,
+    RouterType,
+    TrapEvent,
+)
+from app.schemas import OpenTypeCount, StatsSummary, StatsTimeseries
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
@@ -56,4 +69,91 @@ def summary(db: Session = Depends(get_db)):
         customers_impacted=customers_impacted,
         customers_down=customers_down,
         incidents_in_triage=incidents_in_triage,
+    )
+
+
+# Window (minutes) -> bucket size (minutes): ~60-100 points per chart.
+TIMESERIES_WINDOWS = {60: 1, 360: 5, 1440: 15}
+
+
+def _utc(dt: datetime | None) -> datetime | None:
+    """SQLite hands back naive datetimes; everything here is UTC."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+@router.get("/timeseries", response_model=StatsTimeseries)
+def timeseries(
+    window_minutes: int = Query(60, description="One of 60, 360, 1440"),
+    db: Session = Depends(get_db),
+):
+    """Fleet-wide telemetry for the Dashboard charts, bucketed in Python so
+    it works the same on SQLite and Postgres."""
+    bucket_minutes = TIMESERIES_WINDOWS.get(window_minutes)
+    if bucket_minutes is None:
+        window_minutes, bucket_minutes = 60, 1
+    bucket = timedelta(minutes=bucket_minutes)
+    n = window_minutes // bucket_minutes
+
+    now = datetime.now(timezone.utc)
+    # Align to bucket boundaries so the points don't shift on every poll.
+    epoch_min = int(now.timestamp() // 60)
+    end = datetime.fromtimestamp((epoch_min - epoch_min % bucket_minutes) * 60, timezone.utc) + bucket
+    start = end - bucket * n
+    buckets = [start + bucket * k for k in range(n)]
+
+    def histogram(times) -> list[int]:
+        counts = [0] * n
+        for t in times:
+            t = _utc(t)
+            if t is None or t < start or t >= end:
+                continue
+            counts[int((t - start) / bucket)] += 1
+        return counts
+
+    traps = histogram(t for (t,) in db.query(TrapEvent.received_at).filter(TrapEvent.received_at >= start))
+
+    incident_rows = (
+        db.query(Incident.opened_at, Incident.closed_at)
+        .filter(Incident.opened_at < end, or_(Incident.closed_at.is_(None), Incident.closed_at >= start))
+        .all()
+    )
+    incidents_opened = histogram(o for o, _ in incident_rows)
+    opened_sorted = sorted(_utc(o) for o, _ in incident_rows if o is not None)
+    closed_sorted = sorted(_utc(c) for _, c in incident_rows if c is not None)
+    open_incidents = []
+    for k in range(n):
+        t = min(buckets[k] + bucket, now)
+        open_incidents.append(bisect_right(opened_sorted, t) - bisect_right(closed_sorted, t))
+
+    action_rows = (
+        db.query(RemediationAction.started_at, RemediationAction.status)
+        .filter(RemediationAction.started_at >= start, RemediationAction.status != RemediationStatus.SKIPPED)
+        .all()
+    )
+    autoheal_actions = histogram(t for t, _ in action_rows)
+    autoheal_failed = histogram(t for t, status in action_rows if status == RemediationStatus.FAILED)
+
+    by_type = (
+        db.query(Incident.incident_type, Incident.layer, func.count(Incident.id))
+        .filter(Incident.status == IncidentStatus.OPEN)
+        .group_by(Incident.incident_type, Incident.layer)
+        .all()
+    )
+    open_by_type = [
+        OpenTypeCount(incident_type=t.value, layer=layer.value, count=c)
+        for t, layer, c in sorted(by_type, key=lambda row: -row[2])
+    ]
+
+    return StatsTimeseries(
+        window_minutes=window_minutes,
+        bucket_minutes=bucket_minutes,
+        buckets=buckets,
+        traps=traps,
+        incidents_opened=incidents_opened,
+        open_incidents=open_incidents,
+        autoheal_actions=autoheal_actions,
+        autoheal_failed=autoheal_failed,
+        open_by_type=open_by_type,
     )

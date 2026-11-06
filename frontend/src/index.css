@@ -70,10 +70,18 @@ header.topbar h1 {
 
 .stats-strip {
   margin-left: auto;
+  min-width: 0; /* lets it shrink (and wrap) instead of pushing the actions off-screen */
   display: flex;
-  gap: 1.25rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.2rem 1.25rem;
   font-size: 0.85rem;
   color: #9aa4bf;
+}
+
+/* Each stat wraps as a whole ("46 open incidents"), never word by word. */
+.stats-strip span {
+  white-space: nowrap;
 }
 
 .stats-strip strong {
@@ -83,6 +91,25 @@ header.topbar h1 {
 .topbar-actions {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
+}
+
+/* Laptop widths: tighten the spacing so the strip fits on one line for longer. */
+@media (max-width: 1360px) {
+  header.topbar {
+    gap: 1rem;
+  }
+
+  .stats-strip {
+    column-gap: 0.85rem;
+    font-size: 0.8rem;
+  }
+
+  .current-user,
+  .icon-button,
+  .logout-button {
+    margin-left: 0.6rem;
+  }
 }
 
 .logout-button {
@@ -769,4 +796,539 @@ button:not(:disabled):hover {
   .board-column {
     max-height: 45vh;
   }
+}
+
+/* Dashboard - live map backdrop with floating KPI cards and a telemetry
+   strip (see components/Dashboard.jsx). The overlay containers ignore the
+   pointer so the map stays draggable between cards; the cards themselves
+   take it back. z-index clears Leaflet's panes/controls (<= 800) but stays
+   under modals (2000). */
+.dashboard {
+  position: relative;
+  height: 100%;
+  min-height: 560px;
+}
+
+.dashboard-map {
+  position: absolute;
+  inset: 0;
+}
+
+/* Night-mode basemap: the same OpenStreetMap tiles as the Map tab,
+   inverted and hue-shifted back so water stays blue. Only the tile pane -
+   markers and lines keep their real colors. */
+.dashboard .leaflet-container {
+  background: #0b1120;
+}
+
+.dashboard .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(200deg) brightness(0.85) contrast(0.9) saturate(0.6);
+}
+
+.dash-kpis,
+.dash-bottom {
+  position: absolute;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.dash-kpis > *,
+.dash-bottom > * {
+  pointer-events: auto;
+}
+
+.dash-kpis {
+  top: 12px;
+  right: 12px;
+  left: 290px; /* clear of the map's layer-toggle panel */
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.dash-kpi {
+  min-width: 140px;
+  background: rgba(15, 20, 32, 0.82);
+  backdrop-filter: blur(6px);
+  border: 1px solid #2c3754;
+  border-radius: 10px;
+  padding: 0.7rem 1rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.dash-kpi .value {
+  font-size: 1.9rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.dash-kpi .label {
+  color: #9aa4bf;
+  font-size: 0.78rem;
+  margin-top: 0.2rem;
+}
+
+.dash-kpi .sub {
+  color: #9aa4bf;
+  font-size: 0.7rem;
+  margin-top: 0.2rem;
+}
+
+.dash-bottom {
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.4rem;
+}
+
+/* One row of panels; scrolls sideways on narrower screens rather than
+   wrapping into a second row that would bury the map. */
+.dash-charts {
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(200px, 1fr));
+  gap: 0.75rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.dash-window {
+  display: flex;
+  gap: 2px;
+  background: rgba(15, 20, 32, 0.82);
+  border: 1px solid #2c3754;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.dash-window button {
+  background: transparent;
+  border: none;
+  color: #9aa4bf;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.dash-window button.active {
+  background: #2563eb;
+  color: #fff;
+}
+
+.dash-panel {
+  min-width: 0;
+  background: rgba(15, 20, 32, 0.86);
+  backdrop-filter: blur(6px);
+  border: 1px solid #2c3754;
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem 0.4rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.dash-error {
+  grid-column: 1 / -1;
+  color: #f87171;
+  font-size: 0.8rem;
+}
+
+.dash-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.dash-panel-head .title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dash-panel-head .latest {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.dash-panel-sub {
+  color: #7c87a3;
+  font-size: 0.68rem;
+  min-height: 1em;
+  margin-bottom: 0.2rem;
+}
+
+.dash-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: crosshair;
+}
+
+.dash-chart .grid {
+  stroke: #232c42;
+  stroke-width: 1;
+}
+
+.dash-chart .tick {
+  fill: #7c87a3;
+  font-size: 9.5px;
+}
+
+.dash-chart .avg-line {
+  stroke: #f87171;
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+.dash-chart .hover-line {
+  stroke: #9aa4bf;
+  stroke-width: 0.8;
+  stroke-dasharray: 2 2;
+}
+
+.dash-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 2px;
+}
+
+.dash-bar-row {
+  display: grid;
+  grid-template-columns: 5.6rem 1fr 2rem;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.66rem;
+}
+
+.dash-bar-row .name {
+  color: #9aa4bf;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dash-bar-row .track {
+  height: 7px;
+  background: #1c2438;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.dash-bar-row .fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+}
+
+.dash-bar-row .count {
+  text-align: right;
+}
+
+.dash-empty {
+  color: #7c87a3;
+  font-size: 0.75rem;
+  padding: 1rem 0;
+  text-align: center;
+}
+
+/* Narrow screens: no room to float over the map - stack map, cards and
+   charts in normal flow instead. */
+@media (max-width: 900px) {
+  .dashboard {
+    height: auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding-bottom: 0.75rem;
+  }
+
+  .dashboard-map {
+    position: relative;
+    height: 55vh;
+  }
+
+  .dash-kpis,
+  .dash-bottom {
+    position: static;
+    padding: 0 0.75rem;
+  }
+
+  .dash-kpis {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dash-kpi {
+    min-width: 0;
+  }
+
+  .dash-charts {
+    grid-template-columns: 1fr;
+    overflow-x: visible;
+  }
+}
+
+.login-back {
+  position: absolute;
+  top: 1.25rem;
+  left: 1.5rem;
+  z-index: 2;
+  color: #9aa4bf;
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+.login-back:hover {
+  color: #e6e9f0;
+}
+
+/* ---- MIBs & Traps tab (MibManager.jsx) ---- */
+.mib-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 1400px;
+}
+
+.mib-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.mib-header h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.3rem;
+}
+
+.mib-header .settings-hint {
+  margin: 0;
+}
+
+.mib-stats {
+  flex: 1;
+  max-width: 760px;
+  margin: 0;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.mib-stats .card {
+  padding: 0.75rem 0.9rem;
+}
+
+.mib-stats .card .value {
+  font-size: 1.4rem;
+}
+
+.mib-tabs {
+  margin-bottom: 0;
+}
+
+.mib-card {
+  background: #161c2c;
+  border: 1px solid #262f45;
+  border-radius: 10px;
+  padding: 1rem 1.1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.mib-card h3 {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #9aa4bf;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.mib-card .settings-hint {
+  margin: 0;
+}
+
+.mib-card .field-grid {
+  margin-top: 0;
+}
+
+.mib-card code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8em;
+  background: #0f1420;
+  border: 1px solid #262f45;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  margin: 0 0.15rem;
+}
+
+.mib-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.mib-card-head .login-submit,
+.mib-actions .login-submit {
+  margin-top: 0;
+  width: auto;
+  padding: 0.5rem 1rem;
+}
+
+.mib-drop {
+  border: 2px dashed #33405f;
+  border-radius: 10px;
+  padding: 1.6rem 1rem;
+  text-align: center;
+  color: #9aa4bf;
+  font-size: 0.88rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.mib-drop strong {
+  color: #e6e9f0;
+}
+
+.mib-drop:hover,
+.mib-drop.dragging {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.mib-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.mib-file-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.6rem;
+  background: #0f1420;
+  border-radius: 6px;
+}
+
+.mib-file-list li span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mib-file-list button,
+.mib-row-actions button,
+.mib-card td > button {
+  padding: 0.25rem 0.55rem;
+  font-size: 0.75rem;
+}
+
+.mib-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.mib-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.mib-result .form-success,
+.mib-result-warn {
+  font-size: 0.82rem;
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+}
+
+.mib-result-warn {
+  color: #facc15;
+  background: #3d341b;
+}
+
+.mib-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.mib-toolbar input[type="search"] {
+  flex: 1;
+  min-width: 220px;
+}
+
+.mib-oid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.mib-varbinds {
+  color: #9aa4bf;
+  font-size: 0.74rem;
+  max-width: 320px;
+  white-space: normal;
+  margin-top: 0.15rem;
+}
+
+.mib-row-actions {
+  white-space: nowrap;
+}
+
+.mib-row-actions button + button {
+  margin-left: 0.3rem;
+}
+
+.mib-badge {
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.mib-badge.builtin { background: #26314d; color: #93c5fd; }
+.mib-badge.custom { background: #1b3d2b; color: #4ade80; }
+.mib-badge.disabled { background: #2a2f3d; color: #9aa4bf; }
+.mib-badge.named { background: #1e2436; color: #9aa4bf; }
+
+.badge.sev-critical { background: #3d1b1b; color: #f87171; }
+.badge.sev-warning { background: #3d341b; color: #facc15; }
+.badge.sev-info { background: #26314d; color: #93c5fd; }
+
+.mib-rule-form .mib-wide {
+  grid-column: 1 / -1;
+}
+
+.mib-rule-form textarea {
+  resize: vertical;
+}
+
+.mib-check {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.5rem !important;
+  padding-bottom: 0.45rem;
+}
+
+/* Incident cleared by the device (linkUp ...) but still open for an engineer
+   - same orange as the router's marker on the map. */
+.badge.recovered {
+  background: rgba(249, 115, 22, 0.15);
+  color: #f97316;
 }

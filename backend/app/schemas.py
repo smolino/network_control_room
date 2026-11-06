@@ -60,6 +60,10 @@ class RouterOut(BaseModel):
     # picked up yet (see app.incidents.service.needs_attention_router_ids).
     # The UI blinks the router's marker until it's acknowledged or clears.
     needs_attention: bool = False
+    # True while an open incident on this router has been cleared by the
+    # device itself (e.g. linkUp) but not yet resolved by an engineer - the
+    # map shows it as recovered, pending review.
+    device_cleared: bool = False
     # This router's IS-IS NET (Network Entity Title) - primaries only, since
     # customer CPE doesn't run the backbone IGP. See app.bundles.isis_net.
     isis_net: str | None = None
@@ -158,6 +162,7 @@ class IncidentOut(BaseModel):
     owner_user_id: int | None = None
     owner_username: str | None = None
     acknowledged_at: datetime | None = None
+    device_cleared_at: datetime | None = None
     resolved_by: str | None = None
     resolution_reason: ResolutionReason | None = None
     resolution_note: str | None = None
@@ -331,6 +336,29 @@ class IncidentNotificationOut(BaseModel):
     status: NotificationStatus
     error: str | None = None
     sent_at: datetime
+
+
+class OpenTypeCount(BaseModel):
+    incident_type: str
+    layer: str  # "L1" or "L3"
+    count: int
+
+
+class StatsTimeseries(BaseModel):
+    """Per-bucket telemetry for the Dashboard's chart strip - see
+    app.api.stats.timeseries. All lists line up with `buckets` (each a
+    bucket's start time, UTC)."""
+
+    window_minutes: int
+    bucket_minutes: int
+    buckets: list[datetime]
+    traps: list[int]  # SNMP traps received
+    incidents_opened: list[int]
+    open_incidents: list[int]  # open at the end of each bucket
+    autoheal_actions: list[int]  # remediation attempts that ran (not skipped)
+    autoheal_failed: list[int]
+    # Currently open incidents, fleet-wide, by type - most first.
+    open_by_type: list[OpenTypeCount]
 
 
 class StatsSummary(BaseModel):

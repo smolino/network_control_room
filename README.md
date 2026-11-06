@@ -235,6 +235,73 @@ everything defaults to `L3` except the genuinely physical-layer types:
 | Cisco optical Rx-power threshold, or the fiber-fault generator's `opticalLossOfSignal`/`opticalSignalRestored` (`FIBER_CUT_OID`/`FIBER_CUT_CLEAR_OID`, synthetic — see below) | `OPTICAL_ALARM` | **L1** |
 | anything else | alarm only | L3 |
 
+### Cisco MIB trap catalogue
+
+Traps with no rule in the table above aren't recorded as a bare
+`unknownTrap`. They are named from a catalogue of **2,290 trap
+definitions** (SNMPv2 `NOTIFICATION-TYPE` and SNMPv1 `TRAP-TYPE`) parsed
+from Cisco's public MIB repository: Cisco enterprise MIBs plus the
+standard MIBs Cisco ships (IF-MIB, BGP4-MIB, ISIS-MIB, ...). The catalogue
+lives in `backend/app/snmp/data/trap_catalog.json`, and each entry holds
+the trap's name, defining MIB, varbinds, status and description. It is
+used by `lookup_trap()` in `app/snmp/oid_map.py`, which the normalizer and
+classifier both call. Catalogued traps still stay alarm-only; to turn one
+into an incident, add it to `TRAP_OID_MAP`, using the catalogue to find
+its OID and varbinds.
+
+To refresh it from the latest MIBs (the raw MIBs are ~470 MB, so they are
+not kept in this repo):
+
+```bash
+git clone --depth 1 https://github.com/cisco/cisco-mibs.git /tmp/cisco-mibs
+python3 scripts/build_trap_catalog.py /tmp/cisco-mibs
+```
+
+### MIBs & Traps tab: other appliances and custom traps
+
+The **MIBs & Traps** tab extends this to any vendor. Everyone can browse
+it; changes are admin-only. Backend: `app/api/mibs.py` and
+`app/snmp/mib_registry.py`.
+
+- **Import MIBs**: upload the MIB files of any appliance, by drag-and-drop
+  or file picker, and tag them with an appliance name. They are parsed by
+  `app/snmp/mib_parser.py`, the same parser that builds the Cisco
+  catalogue, and stored in `mib_modules` / `mib_traps`.
+  - Every import re-resolves all stored modules together, so a vendor's
+    root module (`JUNIPER-SMI`, ...) uploaded later fixes the traps of
+    modules uploaded before it.
+  - Until then, those traps are listed as unresolved, together with the
+    missing symbol.
+- **Trap catalogue**: search traps from imported MIBs and the Cisco
+  catalogue. Each row shows how the trap is handled: built-in rule, custom
+  trap, or named alarm only.
+- **Custom traps** (`trap_rules`): an OID with a name, appliance,
+  severity and an action:
+  - **raise** opens or bumps an incident of the chosen type, and then
+    follows the normal incident workflow.
+  - **clear** resolves the open incident of that type on the same router
+    and interface.
+  - **alarm** stores the trap only.
+
+  An optional *interface varbind* (e.g. `ifName` `1.3.6.1.2.1.31.1.1.1.1`,
+  matched exactly or as a prefix) tells the classifier which interface the
+  trap is about. A custom trap can be created from scratch or from any
+  catalogue entry. OIDs handled by a built-in rule (`TRAP_OID_MAP`) can't be
+  overridden.
+
+Order of precedence in `classify_and_store`:
+1. built-in rule
+2. custom trap
+3. name from an imported MIB
+4. name from the Cisco catalogue
+5. `unknownTrap`
+
+The classifier runs in the `correlator` process and reads custom traps and
+imported names through a cache, so UI changes apply within 15 seconds. The
+`normalizer` has no database access by design. The `trap_name`/`severity`
+it adds to `norm-alarms` therefore only reflect the built-in rules and the
+Cisco catalogue; the correlator is the source of truth.
+
 "Alarm only" traps are stored as `TrapEvent` rows (each router's trap
 history) but never become incidents — the incident table only holds
 problems someone or something has to deal with. See "Incident workflow"
@@ -521,6 +588,14 @@ traps against an already-open incident don't re-trigger it):
    **symptomatic** of an open L1 root cause (see "L1/L3 layering" above)
    skips auto-heal entirely, even if its type would otherwise be
    actionable.
+
+Admins can switch auto-heal off with the **Enable auto-heal** checkbox under
+**Settings → Simulation** (`POST /api/simulation/auto-heal`, saved in the
+`app_settings` table so it survives restarts). While it's off, no playbook
+runs and nothing gets resolved automatically: a settled incident goes
+straight to **Triage**, clear traps (linkUp, bgpEstablished, ...) no longer
+close incidents, and every incident stays open until an engineer resolves
+it.
 
 Every backup and every action (success, failure, or skip, with a log) is
 persisted and shown in the UI: the **Incidents** tab has an "Auto-heal"
