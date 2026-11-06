@@ -32,10 +32,11 @@ pop_event() for the one WebSocket payload describing all of it.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -44,6 +45,7 @@ from app.fault_location import locate_fault
 from app.impact import Impact, compute_impacts
 from app.models import (
     USER_RESOLUTION_REASONS,
+    AlarmClass,
     AlarmLayer,
     AppSetting,
     Incident,
@@ -59,6 +61,7 @@ from app.models import (
     RouterType,
 )
 from app.remediation.engine import AUTO_HEAL_ELIGIBLE_TYPES, maybe_remediate
+from app.snmp.alarm_classes import TYPE_CLASS, filtered_classes, layer_for
 from app.schemas import FaultLocation, IncidentImpact, IncidentOut, RemediationSummary
 
 if TYPE_CHECKING:
@@ -89,6 +92,8 @@ SYSTEM = "system"
 # on here in the correlator process too.
 AUTO_HEAL = "auto_heal"
 
+logger = logging.getLogger(__name__)
+
 _TOUCHED_INCIDENTS = "ncr_touched_incidents"
 _TOUCHED_ROUTERS = "ncr_touched_routers"
 
@@ -110,6 +115,10 @@ def auto_heal_enabled(db: Session) -> bool:
 
 
 def has_clear_signal(incident: Incident) -> bool:
+    # Optical-element conditions are cleared by the element itself (see
+    # OPTICAL_ALARM_CLEAR_OID); so is the peering-scoped fiber cut.
+    if incident.condition is not None:
+        return True
     if incident.incident_type == IncidentType.OPTICAL_ALARM:
         return incident.peering_id is not None
     return incident.incident_type in CLEARABLE_TYPES
@@ -141,7 +150,9 @@ def compute_priority(incident: Incident, router_type: RouterType | None, impact:
     """P1..P4 from how bad the alarm is (severity, physical layer, backbone
     router) and how many customers it hurts right now (see app.impact)."""
     score = _SEVERITY_SCORE.get(incident.severity or "", 0)
-    if incident.layer == AlarmLayer.L1:
+    # A transport fault (loss of light/frame) takes every service on that
+    # path with it - unlike a hardware alarm on the same element.
+    if incident.alarm_class == AlarmClass.TRANSPORT or (incident.alarm_class is None and incident.layer == AlarmLayer.L1):
         score += 1
     if router_type == RouterType.PRIMARY:
         score += 1
@@ -187,6 +198,8 @@ def open_or_bump(
     now: datetime,
     peering_id: int | None = None,
     fault_segment_index: int | None = None,
+    alarm_class: AlarmClass | None = None,
+    condition: str | None = None,
 ) -> tuple[Incident, bool]:
     """Returns (incident, created) - `created` is False when an already-open
     incident of this type/interface was found and just had its trap_count
@@ -204,6 +217,8 @@ def open_or_bump(
     )
     if peering_id is not None:
         query = query.filter(Incident.peering_id == peering_id)
+    if condition is not None:
+        query = query.filter(Incident.condition == condition)
     incident = query.first()
     if incident:
         incident.trap_count += 1
@@ -212,9 +227,14 @@ def open_or_bump(
         touch(db, incident)
         return incident, False
 
+    if alarm_class is None:
+        alarm_class = TYPE_CLASS.get(incident_type, AlarmClass.MANAGEMENT)
     incident = Incident(
         router_id=router.id,
         incident_type=incident_type,
+        alarm_class=alarm_class,
+        condition=condition,
+        layer=layer_for(alarm_class, router),
         interface_name=interface_name,
         peering_id=peering_id,
         fault_segment_index=fault_segment_index,
@@ -250,6 +270,83 @@ def _correlate(db: Session, incident: Incident, now: datetime) -> None:
     elif incident.peering_id is not None:
         for symptom in find_l3_symptoms(db, incident, now):
             _link_symptom(db, symptom, incident, now)
+
+
+# --- corridor root causes (see app.rca) ---------------------------------------
+
+
+def open_rca_root(
+    db: Session,
+    router: Router,
+    corridor_id: int,
+    key: str,
+    kind: str,
+    severity: str,
+    description: str,
+    span_seq: int | None,
+    now: datetime,
+) -> Incident:
+    """A root cause the corridor engine inferred from the alarms - one per
+    fault, attached to the element it points at."""
+    incident = Incident(
+        router_id=router.id,
+        incident_type=IncidentType.OPTICAL_ALARM,
+        alarm_class=AlarmClass.TRANSPORT,
+        condition=kind,
+        layer=AlarmLayer.L1,
+        corridor_id=corridor_id,
+        rca_key=key,
+        fault_segment_index=span_seq,
+        status=IncidentStatus.OPEN,
+        stage=IncidentStage.NEW,
+        stage_changed_at=now,
+        severity=severity,
+        trap_count=1,
+        description=description[:255],
+    )
+    db.add(incident)
+    db.flush()
+    touch(db, incident)
+    touch_router(db, router)
+    refresh_priorities(db, [incident])
+    return incident
+
+
+def update_rca_root(
+    db: Session, incident: Incident, router: Router, kind: str, severity: str, description: str, now: datetime
+) -> None:
+    """The diagnosis was refined as more alarms arrived (e.g. a single fiber
+    cut turns out to be the whole cable) - same fault, same incident."""
+    incident.condition = kind
+    incident.severity = severity
+    incident.description = description[:255]
+    incident.router_id = router.id
+    incident.trap_count += 1
+    incident.device_cleared_at = None
+    touch(db, incident)
+    touch_router(db, router)
+    refresh_priorities(db, [incident])
+
+
+def clear_rca_root(db: Session, incident: Incident, now: datetime) -> None:
+    """The alarms behind it cleared. Like any clear: resolved with auto-heal
+    on, only marked cleared by the device (for an engineer to confirm) with
+    it off."""
+    if not auto_heal_enabled(db):
+        if incident.device_cleared_at is None:
+            incident.device_cleared_at = now
+            touch(db, incident)
+        return
+    _resolve(db, incident, now, ResolutionReason.AUTO_CLEARED, SYSTEM)
+
+
+def link_symptoms(db: Session, root: Incident, incidents: list[Incident], now: datetime) -> None:
+    """Links incidents the root explains as its symptoms - unless a person
+    already owns one, or it's already linked to a root."""
+    for incident in incidents:
+        if incident.root_cause_incident_id is not None or incident.stage in (IncidentStage.ACKNOWLEDGED, IncidentStage.DISPATCHED):
+            continue
+        _link_symptom(db, incident, root, now)
 
 
 # --- resolving ---------------------------------------------------------------
@@ -316,7 +413,12 @@ def _resolve(
 
 
 def clear(
-    db: Session, router: Router, incident_types: list[IncidentType], interface_name: str | None, now: datetime
+    db: Session,
+    router: Router,
+    incident_types: list[IncidentType],
+    interface_name: str | None,
+    now: datetime,
+    condition: str | None = None,
 ) -> list[Incident]:
     """The device reported the condition gone (linkUp, isisAdjacencyUp,
     bgpEstablished) - resolves the matching open incidents, whatever stage
@@ -330,6 +432,8 @@ def clear(
             Incident.interface_name == interface_name,
             Incident.status == IncidentStatus.OPEN,
             Incident.incident_type.in_(incident_types),
+            # An optical clear only clears its own condition on that port.
+            *([Incident.condition == condition] if condition is not None else []),
         )
         .all()
     )
@@ -453,6 +557,16 @@ def sweep(db: Session, now: datetime) -> dict | None:
     incidents whose settle window has passed and
     escalates fixes that were never confirmed by a clear trap. Commits, and
     returns the WebSocket event for whatever moved (None if nothing did)."""
+    # Corridor root causes first: whatever they explain is linked (and so
+    # suppressed) before the settle window below can auto-heal it on its own.
+    from app import rca
+
+    try:
+        with db.begin_nested():
+            rca.evaluate_all(db, now)
+    except Exception:
+        logger.exception("Corridor root-cause analysis failed")
+
     settled = now - timedelta(seconds=settings.incident_settle_seconds)
     ready = _lock_for_sweep(
         db.query(Incident)
@@ -524,9 +638,16 @@ def device_cleared_router_ids(db: Session, router_ids: list[int] | None = None) 
 def queue(db: Session, limit: int = 500) -> list[Incident]:
     """The Human Review queue: everything a person has to act on, most
     urgent first."""
+    # Incidents of a class that's filtered now (opened before the filter
+    # was switched on) leave the queue too - same intent as not opening them.
+    filtered = [c for c in filtered_classes(db)]
     return (
         db.query(Incident)
-        .filter(Incident.status == IncidentStatus.OPEN, Incident.stage.in_(HUMAN_STAGES))
+        .filter(
+            Incident.status == IncidentStatus.OPEN,
+            Incident.stage.in_(HUMAN_STAGES),
+            *([or_(Incident.alarm_class.is_(None), Incident.alarm_class.notin_(filtered))] if filtered else []),
+        )
         .order_by(Incident.priority.is_(None), Incident.priority.asc(), Incident.opened_at.asc())
         .limit(limit)
         .all()

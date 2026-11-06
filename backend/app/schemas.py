@@ -3,9 +3,11 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.models import (
+    AlarmClass,
     AlarmLayer,
     BgpSessionStatus,
     BundleStatus,
+    ElementRole,
     IncidentStage,
     IncidentStatus,
     IncidentType,
@@ -67,6 +69,10 @@ class RouterOut(BaseModel):
     # This router's IS-IS NET (Network Entity Title) - primaries only, since
     # customer CPE doesn't run the backbone IGP. See app.bundles.isis_net.
     isis_net: str | None = None
+    # router (also when NULL) | transponder | terminal | ila - see
+    # models.ElementRole. Optical elements are L1 only: no IS-IS/BGP.
+    element_role: ElementRole | None = None
+    site_id: int | None = None
 
 
 class RouterNearestOut(RouterOut):
@@ -84,6 +90,9 @@ class TrapEventOut(BaseModel):
     interface_name: str | None = None
     severity: str
     incident_id: int | None = None
+    alarm_class: AlarmClass | None = None
+    condition: str | None = None
+    filtered: bool | None = None
 
 
 class RemediationSummary(BaseModel):
@@ -177,6 +186,14 @@ class IncidentOut(BaseModel):
     # incident_id is set on an L3 incident once it's been linked as a
     # symptom of an open L1 incident on the same peering.
     layer: AlarmLayer
+    # transport | logical | equipment | management - see models.AlarmClass.
+    alarm_class: AlarmClass | None = None
+    # Optical condition code (LOS-P, LOS-O, OPWR-LFAIL, ...), if any - or,
+    # on a root cause app.rca inferred, the diagnosis (CABLE-CUT, ...).
+    condition: str | None = None
+    # Set on root causes inferred on a modelled corridor (see app.rca).
+    corridor_id: int | None = None
+    rca_key: str | None = None
     peering_id: int | None = None
     root_cause_incident_id: int | None = None
     # None for resolved and non-service-affecting incidents - see app.impact.
@@ -280,6 +297,10 @@ class BgpPeeringOut(BaseModel):
     # app/bundles.py. None until POST /api/bgp/seed has run.
     bundle_a: InterfaceBundleOut | None = None
     bundle_b: InterfaceBundleOut | None = None
+    # Set when this link rides a modelled optical corridor (see
+    # models.Corridor, GET /api/corridors) - its physical path is then the
+    # corridor's sites/spans, and repeater_count is just its ILA count.
+    corridor_id: int | None = None
 
 
 class RouterModelIn(BaseModel):
@@ -434,3 +455,206 @@ class OtpEnableIn(BaseModel):
 
 class OtpDisableIn(BaseModel):
     code: str
+
+
+# --- Optical corridors (see models.Corridor, app.corridors) -----------------
+#
+# CorridorSpec is the import format (seed/corridors/*.json): devices are
+# referred to by hostname and sites by code inside the spec, resolved to
+# ids by the importer.
+
+
+class SiteSpec(BaseModel):
+    code: str
+    name: str
+    kind: str  # "pop" | "ila"
+    city: str | None = None
+    country: str | None = None
+    latitude: float
+    longitude: float
+
+
+class CardSpec(BaseModel):
+    slot: int
+    type: str
+    # mux | demux | booster | preamp | line_amp | osc - None for a card that
+    # isn't on the optical path (it's recorded, but gets no ports).
+    function: str | None = None
+    # Direction of travel for amps/mux/demux ("AZ"/"ZA"); for osc, the side
+    # of the site the card faces ("A"/"Z"). None for a standby OSC card.
+    direction: str | None = None
+
+
+class PortSpec(BaseModel):
+    name: str
+    kind: str  # router_eth | client | trunk
+    wavelength_nm: float | None = None
+
+
+class DeviceSpec(BaseModel):
+    hostname: str
+    mgmt_ip: str
+    role: ElementRole
+    vendor: str = "Cisco"
+    model: str | None = None
+    site: str  # SiteSpec.code
+    cards: list[CardSpec] = []
+    ports: list[PortSpec] = []
+
+
+class SpanSpec(BaseModel):
+    seq: int
+    from_device: str  # hostname, A side
+    to_device: str  # hostname, Z side
+    provider: str | None = None
+    a_end: str | None = None
+    b_end: str | None = None
+    length_km: float | None = None
+    provider_circuit_id: str | None = None
+
+
+class CircuitSpec(BaseModel):
+    wavelength_nm: float
+    a_router: str
+    a_router_port: str
+    a_transponder: str
+    a_client_port: str
+    z_transponder: str
+    z_client_port: str
+    z_router: str
+    z_router_port: str
+
+
+class L3LinkSpec(BaseModel):
+    """An L3 (IS-IS/BGP) link between two routers carried by this corridor;
+    its bundle members are the router ports of every circuit between them."""
+
+    router_a: str
+    router_z: str
+    bundle_a: str = "Bundle-Ether1"
+    bundle_z: str = "Bundle-Ether1"
+    member_bandwidth_mbps: int = 100000
+
+
+class CorridorSpec(BaseModel):
+    name: str
+    description: str | None = None
+    assumptions: list[str] = []
+    sites: list[SiteSpec]  # ordered from site A to site Z
+    devices: list[DeviceSpec]
+    spans: list[SpanSpec]
+    circuits: list[CircuitSpec] = []
+    l3_links: list[L3LinkSpec] = []
+
+
+class CorridorImportOut(BaseModel):
+    corridor_id: int
+    devices_created: list[str]
+    devices_updated: list[str]
+    spans: int
+    optical_paths: int
+    client_circuits: int
+    l3_peering_ids: list[int]
+    # Peerings removed because one side is an optical element (?prune=true),
+    # or - without prune - found and left in place.
+    l1_peerings_removed: list[int] = []
+    l1_peerings_found: list[int] = []
+    warnings: list[str] = []
+
+
+class RoutePointOut(BaseModel):
+    site_code: str
+    name: str
+    kind: str
+    latitude: float
+    longitude: float
+    device_ids: list[int]
+
+
+class SpanOut(BaseModel):
+    id: int
+    seq: int
+    from_device_id: int
+    from_hostname: str
+    to_device_id: int
+    to_hostname: str
+    provider: str | None = None
+    a_end: str | None = None
+    b_end: str | None = None
+    length_km: float | None = None
+    km_from_a: float | None = None
+    provider_circuit_id: str | None = None
+
+
+class PathHopOut(BaseModel):
+    seq: int
+    port_id: int | None = None
+    device_id: int | None = None
+    hostname: str | None = None
+    port: str | None = None
+    port_kind: str | None = None
+    span_seq: int | None = None
+
+
+class OpticalPathOut(BaseModel):
+    id: int
+    name: str
+    kind: str
+    direction: str
+    wavelength_nm: float | None = None
+    hops: list[PathHopOut] = []
+
+
+class CircuitOut(BaseModel):
+    id: int
+    wavelength_nm: float
+    a_router: str
+    a_router_port: str
+    a_client: str
+    z_client: str
+    z_router: str
+    z_router_port: str
+    peering_id: int | None = None
+
+
+class CorridorOut(BaseModel):
+    id: int
+    name: str
+    description: str | None = None
+    assumptions: list[str] = []
+    site_a: str
+    site_z: str
+    length_km: float | None = None
+    route: list[RoutePointOut]
+    spans: list[SpanOut]
+    peering_ids: list[int] = []
+    paths: list[OpticalPathOut] = []
+    circuits: list[CircuitOut] = []
+
+
+class DiagnosisOut(BaseModel):
+    """One fault the corridor engine infers from the active alarms."""
+
+    kind: str
+    key: str
+    device_id: int
+    hostname: str
+    summary: str
+    span_seq: int | None = None
+    directions: list[str] = []
+    evidence: list[dict]  # {"device_id", "hostname", "port", "condition"}
+    explains: int  # how many (device, interface) pairs it accounts for
+    circuit_ids: list[int] = []
+    peering_ids: list[int] = []
+    root_incident_id: int | None = None
+
+
+class CarriedOut(BaseModel):
+    """What a span or a device carries - everything that goes down with it.
+    Answered from the Neo4j topology graph (see app.topology_graph)."""
+
+    optical_paths: list[str]
+    wavelengths_nm: list[float]
+    circuit_ids: list[int]
+    router_interfaces: list[dict]  # {"router_id", "hostname", "interface"}
+    peering_ids: list[int]

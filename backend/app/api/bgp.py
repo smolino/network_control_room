@@ -8,7 +8,17 @@ from app.bundles import ensure_bundles_for_peering
 from app.auth import require_admin
 from app.db import SessionLocal, get_db
 from app.fiber_faults import active_faults
-from app.models import AlarmLayer, BgpPeering, BgpSessionStatus, Incident, IncidentStatus, InterfaceBundle, Router
+from app.models import (
+    AlarmLayer,
+    BgpPeering,
+    BgpSessionStatus,
+    ClientCircuit,
+    Incident,
+    IncidentStatus,
+    Interface,
+    InterfaceBundle,
+    Router,
+)
 from app.schemas import BgpPeerIn, BgpPeeringOut, InterfaceBundleOut, InterfaceOut
 from app.topology_graph import resync_peering_to_neo4j, sync_peering_to_neo4j
 
@@ -122,6 +132,23 @@ def seed_peerings(pairs: list[BgpPeerIn], db: Session = Depends(get_db)):
         sync_peering_to_neo4j(peering, bundle_a, bundle_b)
 
     return result
+
+
+def delete_peering(db: Session, peering: BgpPeering) -> None:
+    """Removes one peering with its interface bundles (both sides). None of
+    these FKs cascade at the DB level, so children go first. Incidents that
+    pointed at it are detached, not deleted - their history isn't the
+    link's. The caller commits, then mirrors the removal into Neo4j with
+    app.topology_graph.delete_peering_from_neo4j."""
+    db.query(Incident).filter(Incident.peering_id == peering.id).update({"peering_id": None}, synchronize_session=False)
+    db.query(ClientCircuit).filter(ClientCircuit.peering_id == peering.id).update(
+        {"peering_id": None}, synchronize_session=False
+    )
+    bundle_ids = [row[0] for row in db.query(InterfaceBundle.id).filter(InterfaceBundle.peering_id == peering.id).all()]
+    if bundle_ids:
+        db.query(Interface).filter(Interface.bundle_id.in_(bundle_ids)).delete(synchronize_session=False)
+    db.query(InterfaceBundle).filter(InterfaceBundle.peering_id == peering.id).delete(synchronize_session=False)
+    db.delete(peering)
 
 
 def repair_peering_bundles() -> None:

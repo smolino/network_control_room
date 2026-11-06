@@ -99,14 +99,27 @@ class AlarmLayer(str, enum.Enum):
     L3 = "L3"  # control-plane/logical (BGP, IS-IS, interfaces)
 
 
-# Which layer each incident type belongs to for topology-based root-cause
-# correlation (see app.correlation) - anything not listed here defaults to
-# L3, since most of this codebase's incident types are control-plane/
-# interface events. Only the genuinely physical-layer alarm types are L1.
+class AlarmClass(str, enum.Enum):
+    """What kind of problem an alarm reports - orthogonal to AlarmLayer
+    (which network layer the element sits on). Only TRANSPORT alarms can be
+    the root cause of a fiber fault; EQUIPMENT (hardware/environment) and
+    MANAGEMENT alarms can be filtered out entirely (see
+    app.snmp.alarm_classes). Assigned per trap, not per incident type: the
+    same OPTICAL_ALARM type covers LOS (transport) and a sensor threshold
+    (equipment)."""
+
+    TRANSPORT = "transport"  # loss of light/frame on the optical path: LOS, LOS-O, LOF, AIS, LF/RF...
+    LOGICAL = "logical"  # L3 consequences: link down, IS-IS, BFD, BGP
+    EQUIPMENT = "equipment"  # hardware/environment: card, fan, power, temperature, CPU, memory, sensors
+    MANAGEMENT = "management"  # device management: boot, authentication, configuration
+
+
+# Which layer each incident type belongs to when nothing more specific is
+# known - app.snmp.alarm_classes.layer_for sets it from the alarm class and
+# the element's role when an incident is opened. Anything not listed
+# defaults to L3.
 INCIDENT_LAYER: dict[IncidentType, AlarmLayer] = {
     IncidentType.OPTICAL_ALARM: AlarmLayer.L1,
-    IncidentType.FAN_FAILURE: AlarmLayer.L1,
-    IncidentType.PSU_FAILURE: AlarmLayer.L1,
 }
 
 
@@ -142,6 +155,23 @@ class BundleStatus(str, enum.Enum):
 class RouterType(str, enum.Enum):
     PRIMARY = "primary"  # telco-owned backbone router, BGP-meshed with other primaries
     CUSTOMER = "customer"  # last-mile CPE, single-homed to one primary, not in the BGP mesh
+
+
+class ElementRole(str, enum.Enum):
+    """What kind of network element a `routers` row really is. Optical
+    elements live in the same table as routers so the alarm pipeline (which
+    resolves a trap's sender by mgmt_ip there) and incidents work for them
+    unchanged - but only ROUTER runs IS-IS/BGP/bundles. NULL means ROUTER,
+    so rows created before this column existed keep behaving as routers.
+    See app.corridors for how the optical ones are wired together."""
+
+    ROUTER = "router"  # L3: e.g. Cisco ASR9K
+    TRANSPONDER = "transponder"  # L1: e.g. Cisco NCS1004 - client <-> DWDM trunk
+    TERMINAL = "terminal"  # L1: DWDM line terminal (mux/demux + booster/preamp), e.g. ONS 15454 MSTP
+    ILA = "ila"  # L1: in-line amplifier site, e.g. ONS 15454 with one amp per direction
+
+
+L1_ELEMENT_ROLES = (ElementRole.TRANSPONDER, ElementRole.TERMINAL, ElementRole.ILA)
 
 
 class TeamKind(str, enum.Enum):
@@ -181,7 +211,12 @@ class Router(Base):
     status = Column(Enum(RouterStatus), default=RouterStatus.UNKNOWN, nullable=False)
     last_seen_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # NULL = a router (see ElementRole). Stored as a plain string so adding
+    # a role later needs no enum migration.
+    element_role = Column(Enum(ElementRole, native_enum=False, length=16), nullable=True, index=True)
+    site_id = Column(Integer, ForeignKey("sites.id"), nullable=True, index=True)
 
+    site = relationship("Site")
     trap_events = relationship("TrapEvent", back_populates="router", cascade="all, delete-orphan")
     incidents = relationship("Incident", back_populates="router", cascade="all, delete-orphan")
 
@@ -213,6 +248,13 @@ class TrapEvent(Base):
     severity = Column(String(32), default="info")
     raw_varbinds = Column(Text, nullable=True)
     incident_id = Column(Integer, ForeignKey("incidents.id"), nullable=True, index=True)
+    # See AlarmClass / app.snmp.alarm_classes. `condition` is the optical
+    # condition code (LOS-P, LOS-O, OPWR-LFAIL, ...) when the trap carries one.
+    alarm_class = Column(Enum(AlarmClass, native_enum=False, length=16), nullable=True, index=True)
+    condition = Column(String(32), nullable=True)
+    # True when the trap's class is filtered out (Settings > Alarm filter):
+    # kept as history, but it opened no incident.
+    filtered = Column(Boolean, nullable=True)
 
     router = relationship("Router", back_populates="trap_events")
     incident = relationship("Incident", back_populates="trap_events")
@@ -270,6 +312,18 @@ class Incident(Base):
     # rather than an independent problem, so it's excluded from auto-heal
     # and suppressed from the top-level view.
     root_cause_incident_id = Column(Integer, ForeignKey("incidents.id"), nullable=True, index=True)
+    # See AlarmClass. NULL on incidents opened before classes existed.
+    alarm_class = Column(Enum(AlarmClass, native_enum=False, length=16), nullable=True, index=True)
+    # Optical condition code (LOS-P, LOS-O, LOF, ...) - part of the dedup
+    # key, so LOS and LOF on the same transponder trunk stay separate. On a
+    # root cause the corridor engine inferred, the diagnosis instead
+    # (CABLE-CUT, FIBER-CUT, AMP-FAIL, ...) - see app.rca.
+    condition = Column(String(32), nullable=True)
+    # Set on root causes inferred by app.rca: the corridor, and which fault
+    # this is ("span:4", "amp:12:AZ", ...) - stable while the diagnosis is
+    # refined (a fiber cut that turns out to be a cable cut keeps its key).
+    corridor_id = Column(Integer, ForeignKey("corridors.id"), nullable=True, index=True)
+    rca_key = Column(String(64), nullable=True)
     # For a peering-scoped fiber cut: which span of the run lost signal, as
     # reported by the alarm (FIBER_SEGMENT_OID) - see app.fault_location.
     fault_segment_index = Column(Integer, nullable=True)
@@ -396,6 +450,10 @@ class BgpPeering(Base):
     # coordinates, not simulated/random.
     distance_km = Column(Float, nullable=True)
     repeater_count = Column(Integer, default=0, nullable=False)
+    # Set when this link's physical path is a modelled optical corridor
+    # (see Corridor) rather than the abstract evenly-spaced repeater run
+    # repeater_count describes.
+    corridor_id = Column(Integer, ForeignKey("corridors.id"), nullable=True, index=True)
 
     router_a = relationship("Router", foreign_keys=[router_a_id])
     router_b = relationship("Router", foreign_keys=[router_b_id])
@@ -444,6 +502,187 @@ class Interface(Base):
 
     router = relationship("Router")
     bundle = relationship("InterfaceBundle", back_populates="members")
+
+
+# --- Optical corridor topology ---------------------------------------------
+#
+# A corridor is one DWDM line system between two POPs, modelled the way the
+# signal actually travels so a fault can be located from *where along the
+# path* alarms start (see app.corridors, app.topology_graph):
+#
+#   router port -> transponder client -> transponder trunk (one wavelength)
+#     -> terminal mux -> booster -> span 1 -> ILA amp -> span 2 -> ...
+#     -> far terminal preamp -> demux -> far transponder trunk -> client -> router
+#
+# Everything is directional: "AZ" runs from the corridor's site_a to site_z,
+# "ZA" back. Devices are `routers` rows with an element_role; written by
+# POST /api/corridors/import from a corridor spec (seed/corridors/*.json).
+
+
+class Site(Base):
+    """A physical location: a POP (routers + transponder + terminal) or an
+    in-line amplifier hut."""
+
+    __tablename__ = "sites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(32), nullable=False, unique=True, index=True)
+    name = Column(String(128), nullable=False)
+    kind = Column(String(16), nullable=False)  # "pop" | "ila"
+    city = Column(String(128), nullable=True)
+    country = Column(String(64), nullable=True)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+
+
+class Corridor(Base):
+    __tablename__ = "corridors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(64), nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    site_a_id = Column(Integer, ForeignKey("sites.id"), nullable=False)
+    site_z_id = Column(Integer, ForeignKey("sites.id"), nullable=False)
+    # JSON list of strings: what the spec author had to assume (missing or
+    # contradictory source data), kept so the UI/API can show it.
+    assumptions = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    site_a = relationship("Site", foreign_keys=[site_a_id])
+    site_z = relationship("Site", foreign_keys=[site_z_id])
+    spans = relationship("FiberSpan", back_populates="corridor", order_by="FiberSpan.seq")
+    paths = relationship("OpticalPath", back_populates="corridor", order_by="OpticalPath.name")
+    circuits = relationship("ClientCircuit", back_populates="corridor", order_by="ClientCircuit.id")
+
+
+class Card(Base):
+    """One card in a chassis slot. `function` is what the card does on this
+    path (mux, booster, preamp, demux, line_amp, osc, transponder) - the
+    same card type plays different roles in different places (an OPT-AMP-C
+    is a preamp in a terminal but a line amp in an ILA). `direction` is the
+    direction of travel it amplifies/multiplexes (AZ/ZA), NULL if both/none;
+    for an OSC card it's the side of the site it faces instead ("A"/"Z")."""
+
+    __tablename__ = "cards"
+    __table_args__ = (UniqueConstraint("device_id", "slot", name="uq_card_device_slot"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey("routers.id"), nullable=False, index=True)
+    slot = Column(Integer, nullable=False)
+    card_type = Column(String(32), nullable=False)
+    function = Column(String(16), nullable=True)
+    direction = Column(String(2), nullable=True)
+
+    device = relationship("Router")
+    ports = relationship("Port", back_populates="card")
+
+
+class Port(Base):
+    """A physical port. kind: router_eth | client | trunk | line_in |
+    line_out | com_in | com_out | add | drop | osc_in | osc_out."""
+
+    __tablename__ = "ports"
+    __table_args__ = (UniqueConstraint("device_id", "name", name="uq_port_device_name"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey("routers.id"), nullable=False, index=True)
+    card_id = Column(Integer, ForeignKey("cards.id"), nullable=True, index=True)
+    name = Column(String(64), nullable=False)
+    kind = Column(String(16), nullable=False)
+    direction = Column(String(2), nullable=True)
+    wavelength_nm = Column(Float, nullable=True)
+
+    device = relationship("Router")
+    card = relationship("Card", back_populates="ports")
+
+
+class FiberSpan(Base):
+    """One rented dark-fiber span between two adjacent sites of a corridor
+    (a fiber pair: one fiber per direction). seq 1 starts at site_a."""
+
+    __tablename__ = "fiber_spans"
+    __table_args__ = (UniqueConstraint("corridor_id", "seq", name="uq_span_corridor_seq"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    corridor_id = Column(Integer, ForeignKey("corridors.id"), nullable=False, index=True)
+    seq = Column(Integer, nullable=False)
+    from_device_id = Column(Integer, ForeignKey("routers.id"), nullable=False)  # the A-side element
+    to_device_id = Column(Integer, ForeignKey("routers.id"), nullable=False)  # the Z-side element
+    provider = Column(String(128), nullable=True)
+    a_end = Column(String(64), nullable=True)  # provider's label for the A-side termination
+    b_end = Column(String(64), nullable=True)
+    length_km = Column(Float, nullable=True)
+    provider_circuit_id = Column(String(128), nullable=True)
+
+    corridor = relationship("Corridor", back_populates="spans")
+    from_device = relationship("Router", foreign_keys=[from_device_id])
+    to_device = relationship("Router", foreign_keys=[to_device_id])
+
+
+class OpticalPath(Base):
+    """An ordered route through the corridor in one direction. kind "och" is
+    one wavelength from transponder trunk to transponder trunk; kind "osc"
+    is the supervisory channel over a single span (OSC card to OSC card) -
+    losing both on the same span input is what tells a fiber cut apart from
+    an amplifier failure."""
+
+    __tablename__ = "optical_paths"
+    __table_args__ = (UniqueConstraint("corridor_id", "name", name="uq_path_corridor_name"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    corridor_id = Column(Integer, ForeignKey("corridors.id"), nullable=False, index=True)
+    name = Column(String(64), nullable=False)  # e.g. "OCH-1560.61-AZ", "OSC-S3-AZ"
+    kind = Column(String(8), nullable=False)  # "och" | "osc"
+    direction = Column(String(2), nullable=False)  # "AZ" | "ZA"
+    wavelength_nm = Column(Float, nullable=True)
+
+    corridor = relationship("Corridor", back_populates="paths")
+    hops = relationship("PathHop", back_populates="path", order_by="PathHop.seq", cascade="all, delete-orphan")
+
+
+class PathHop(Base):
+    """One step of an OpticalPath: either a port or a fiber span."""
+
+    __tablename__ = "path_hops"
+    __table_args__ = (UniqueConstraint("path_id", "seq", name="uq_hop_path_seq"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    path_id = Column(Integer, ForeignKey("optical_paths.id"), nullable=False, index=True)
+    seq = Column(Integer, nullable=False)
+    port_id = Column(Integer, ForeignKey("ports.id"), nullable=True, index=True)
+    span_id = Column(Integer, ForeignKey("fiber_spans.id"), nullable=True, index=True)
+
+    path = relationship("OpticalPath", back_populates="hops")
+    port = relationship("Port")
+    span = relationship("FiberSpan")
+
+
+class ClientCircuit(Base):
+    """One end-to-end client service: router port -> transponder client at
+    the A end, carried on the wavelength `wavelength_nm` (its AZ and ZA
+    OpticalPaths), out of the far transponder client into the far router
+    port. The router ports are also the member interfaces of the L3 link's
+    bundle (see BgpPeering.corridor_id), which is how an optical fault
+    reaches the IS-IS adjacencies it takes down."""
+
+    __tablename__ = "client_circuits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    corridor_id = Column(Integer, ForeignKey("corridors.id"), nullable=False, index=True)
+    wavelength_nm = Column(Float, nullable=False)
+    a_router_port_id = Column(Integer, ForeignKey("ports.id"), nullable=False)
+    a_client_port_id = Column(Integer, ForeignKey("ports.id"), nullable=False)
+    z_client_port_id = Column(Integer, ForeignKey("ports.id"), nullable=False)
+    z_router_port_id = Column(Integer, ForeignKey("ports.id"), nullable=False)
+    peering_id = Column(Integer, ForeignKey("bgp_peerings.id"), nullable=True, index=True)
+
+    corridor = relationship("Corridor", back_populates="circuits")
+    a_router_port = relationship("Port", foreign_keys=[a_router_port_id])
+    a_client_port = relationship("Port", foreign_keys=[a_client_port_id])
+    z_client_port = relationship("Port", foreign_keys=[z_client_port_id])
+    z_router_port = relationship("Port", foreign_keys=[z_router_port_id])
+    peering = relationship("BgpPeering")
 
 
 class User(Base):

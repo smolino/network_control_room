@@ -9,6 +9,7 @@ from app.db import get_db
 from app.impact import compute_impacts
 from app.incidents import service as incident_service
 from app.models import (
+    AlarmClass,
     AlarmLayer,
     BgpPeering,
     BgpSessionStatus,
@@ -67,6 +68,7 @@ def list_incidents(
     router_id: int | None = None,
     router_type: RouterType | None = None,
     layer: AlarmLayer | None = None,
+    alarm_class: AlarmClass | None = None,
     # Excludes incidents linked as a symptom of an L1 incident (see
     # app.correlation) - the "suppress symptomatic from the top-level view,
     # keep it visible on drill-down" behavior.
@@ -87,6 +89,8 @@ def list_incidents(
         query = query.join(Router, Incident.router_id == Router.id).filter(Router.router_type == router_type)
     if layer is not None:
         query = query.filter(Incident.layer == layer)
+    if alarm_class is not None:
+        query = query.filter(Incident.alarm_class == alarm_class)
     if root_cause_only:
         query = query.filter(Incident.root_cause_incident_id.is_(None))
     incidents = query.order_by(Incident.updated_at.desc()).limit(limit).all()

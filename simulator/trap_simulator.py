@@ -32,6 +32,7 @@ from pysnmp.hlapi.asyncio import (
     sendNotification,
 )
 
+import optical_faults
 from oids import (
     AUTH_FAILURE_OID,
     BFD_SESSION_DOWN_OID,
@@ -46,6 +47,7 @@ from oids import (
     CISCO_MEMORY_LOW_OID,
     CISCO_OPTICAL_RX_POWER_OID,
     COLD_START_OID,
+    CONDITION_OID,
     IF_NAME_OID,
     INTERFACES,
     ISIS_ADJACENCY_DOWN_OID,
@@ -103,6 +105,16 @@ SIMULATION_POLL_SECONDS = float(os.getenv("SIMULATION_POLL_SECONDS", "3"))
 # the backend, so routers added from the UI or by bulk upload start getting
 # traps too - see Fleet / fleet_refresh_loop.
 FLEET_REFRESH_SECONDS = float(os.getenv("FLEET_REFRESH_SECONDS", "120"))
+# Faults on modelled optical corridors (see optical_faults.py): how often one
+# starts (default pace, divided by the L1 slider) and how long until it's
+# repaired. One fault per corridor at a time.
+OPTICAL_FAULT_INTERVAL_MIN_SECONDS = float(os.getenv("OPTICAL_FAULT_INTERVAL_MIN_SECONDS", "300"))
+OPTICAL_FAULT_INTERVAL_MAX_SECONDS = float(os.getenv("OPTICAL_FAULT_INTERVAL_MAX_SECONDS", "600"))
+OPTICAL_FAULT_DURATION_MIN_SECONDS = float(os.getenv("OPTICAL_FAULT_DURATION_MIN_SECONDS", "120"))
+OPTICAL_FAULT_DURATION_MAX_SECONDS = float(os.getenv("OPTICAL_FAULT_DURATION_MAX_SECONDS", "300"))
+# Average seconds between stray optical alarms (power degrade, fan, ...) per
+# corridor - background noise that is never a fiber fault. 0 = off.
+OPTICAL_NOISE_INTERVAL_SECONDS = float(os.getenv("OPTICAL_NOISE_INTERVAL_SECONDS", "600"))
 
 # Optimistic default so traps flow immediately on startup, before the first
 # poll lands; simulation_control_loop corrects this from the backend's
@@ -112,6 +124,8 @@ _simulation_enabled = True
 # below fires (1 = default pace, 0 = no events) - see rated_sleep. Also
 # polled by simulation_control_loop.
 _l3_rate = 1.0
+# Same for the L1 slider - drives the optical corridor fault loop.
+_l1_rate = 1.0
 
 # Bundle (Port-channel) members per BGP peering link - see
 # backend/app/bundles.py, which independently derives the identical
@@ -209,6 +223,20 @@ class Fleet:
         self.peer_adjacency = peer_adjacency
         self.bgp_bundles = bgp_bundles
         self.primary_interfaces = build_customer_facing_interfaces(primaries, customers)
+        self.primary_ips = {r["mgmt_ip"] for r in primaries}
+        if not hasattr(self, "corridors"):
+            self.corridors: list[dict] = []  # GET /api/corridors/{id} for each corridor
+            self.devices: dict[int, dict] = {}  # every device, optical ones included
+
+    def set_corridors(self, corridors: list[dict], devices: dict[int, dict]) -> None:
+        self.corridors = corridors
+        self.devices = devices
+
+    def is_primary(self, mgmt_ip: str) -> bool:
+        """Still a simulated primary router - false once it's deleted or
+        turned out to be an optical element (see fetch_fleet_from_backend),
+        which the long-running per-router loops below check every round."""
+        return mgmt_ip in self.primary_ips
 
 
 def _get_with_auth(path: str):
@@ -233,6 +261,15 @@ def fetch_fleet_from_backend() -> tuple[list[dict], list[dict], dict, dict]:
     def slim(r: dict) -> dict:
         return {"hostname": r["hostname"], "mgmt_ip": r["mgmt_ip"]}
 
+    # Optical elements (transponders, DWDM terminals, in-line amps - see
+    # backend models.ElementRole) don't run IS-IS/BGP or have router
+    # interfaces, so none of this module's router events apply to them.
+    # They're left out entirely, along with any link that touches one.
+    optical_ids = {r["id"] for r in routers if (r.get("element_role") or "router") != "router"}
+    routers = [r for r in routers if r["id"] not in optical_ids]
+    peerings = [p for p in peerings if p["router_a_id"] not in optical_ids and p["router_b_id"] not in optical_ids]
+    by_id = {r["id"]: r for r in routers}
+
     primaries = [slim(r) for r in routers if r["router_type"] == "primary"]
     customers = [
         {**slim(r), "parent_mgmt_ip": by_id[r["parent_router_id"]]["mgmt_ip"]}
@@ -256,9 +293,25 @@ def fetch_fleet_from_backend() -> tuple[list[dict], list[dict], dict, dict]:
     return primaries, customers, peer_adjacency, bgp_bundles
 
 
+def fetch_corridors_from_backend() -> tuple[list[dict], dict[int, dict]]:
+    """Every modelled optical corridor in full (paths hop by hop, circuits),
+    and every device by id - optical elements included, since they're the
+    ones raising the optical alarms."""
+    corridors = [_get_with_auth(f"/api/corridors/{c['id']}") for c in _get_with_auth("/api/corridors")]
+    devices = {
+        r["id"]: {"hostname": r["hostname"], "mgmt_ip": r["mgmt_ip"], "element_role": r.get("element_role")}
+        for r in _get_with_auth("/api/routers")
+    }
+    return corridors, devices
+
+
 async def fleet_refresh_loop(fleet: Fleet) -> None:
     while True:
         await asyncio.sleep(FLEET_REFRESH_SECONDS)
+        try:
+            fleet.set_corridors(*await asyncio.to_thread(fetch_corridors_from_backend))
+        except (requests.RequestException, KeyError) as exc:
+            logger.warning("Couldn't refresh the optical corridors, keeping the previous ones: %s", exc)
         try:
             before = (len(fleet.primaries), len(fleet.customers))
             fleet.update(*await asyncio.to_thread(fetch_fleet_from_backend))
@@ -306,7 +359,7 @@ async def simulation_control_loop() -> None:
     cancel or restart any of their asyncio tasks. Uses requests (already a
     dependency for seeding) off the event loop via to_thread so a slow poll
     can't stall trap sending."""
-    global _simulation_enabled, _l3_rate
+    global _simulation_enabled, _l3_rate, _l1_rate
     while True:
         try:
             resp = await asyncio.to_thread(requests.get, f"{BACKEND_API_URL}/api/simulation/status", timeout=5)
@@ -320,6 +373,10 @@ async def simulation_control_loop() -> None:
             if l3_rate != _l3_rate:
                 logger.info("L3 event rate set to x%g", l3_rate)
             _l3_rate = l3_rate
+            l1_rate = float(status.get("l1_rate", 1.0))
+            if l1_rate != _l1_rate:
+                logger.info("L1 event rate set to x%g", l1_rate)
+            _l1_rate = l1_rate
         except requests.RequestException as exc:
             logger.warning("Couldn't reach backend for simulation status: %s", exc)
         await asyncio.sleep(SIMULATION_POLL_SECONDS)
@@ -332,6 +389,7 @@ async def send_trap(
     router: dict,
     interface: str | None = None,
     bgp_peer_ip: str | None = None,
+    condition: str | None = None,
 ) -> None:
     if not _simulation_enabled:
         return
@@ -341,6 +399,8 @@ async def send_trap(
         varbinds.append(ObjectType(ObjectIdentity(IF_NAME_OID), OctetString(interface)))
     if bgp_peer_ip:
         varbinds.append(ObjectType(ObjectIdentity(BGP_PEER_OID), OctetString(bgp_peer_ip)))
+    if condition:
+        varbinds.append(ObjectType(ObjectIdentity(CONDITION_OID), OctetString(condition)))
 
     try:
         error_indication, error_status, _, _ = await sendNotification(
@@ -360,10 +420,18 @@ async def send_trap(
         logger.exception("Failed sending trap %s for %s", trap_oid, router["hostname"])
 
 
-async def flap_loop(engine, target, router: dict, interfaces: list[str]) -> None:
+# How long a per-router loop waits before re-checking a router that has
+# left the simulated fleet (it may come back, e.g. a corridor re-import).
+NOT_IN_FLEET_RECHECK_SECONDS = 60
+
+
+async def flap_loop(engine, target, fleet: Fleet, router: dict, interfaces: list[str]) -> None:
     interface = random.choice(interfaces) if interfaces else random.choice(INTERFACES)
     while True:
         await wait_while_l3_off()
+        if not fleet.is_primary(router["mgmt_ip"]):
+            await asyncio.sleep(NOT_IN_FLEET_RECHECK_SECONDS)
+            continue
         for _ in range(random.randint(4, 6)):
             await send_trap(engine, target, LINK_DOWN_OID, router, interface)
             await asyncio.sleep(random.uniform(1, 3))
@@ -373,7 +441,7 @@ async def flap_loop(engine, target, router: dict, interfaces: list[str]) -> None
         await rated_sleep(random.uniform(FLAP_QUIET_MIN_SECONDS, FLAP_QUIET_MAX_SECONDS))
 
 
-async def bundle_flap_loop(engine, target, router: dict, peer_ip: str, bundle_info: dict) -> None:
+async def bundle_flap_loop(engine, target, fleet: Fleet, router: dict, peer_ip: str, bundle_info: dict) -> None:
     """Chronically flaps one fixed member of one specific bundle - same
     burst/quiet cadence as flap_loop, but at the IS-IS-adjacency/bundle-
     member layer instead of a plain physical link. Redundancy always
@@ -387,6 +455,9 @@ async def bundle_flap_loop(engine, target, router: dict, peer_ip: str, bundle_in
     member = random.choice(members)
     while True:
         await wait_while_l3_off()
+        if not (fleet.is_primary(router["mgmt_ip"]) and fleet.is_primary(peer_ip)):
+            await asyncio.sleep(NOT_IN_FLEET_RECHECK_SECONDS)
+            continue
         for _ in range(random.randint(4, 6)):
             await send_trap(engine, target, ISIS_ADJACENCY_DOWN_OID, router, interface=member, bgp_peer_ip=peer_ip)
             await asyncio.sleep(random.uniform(1, 3))
@@ -396,28 +467,33 @@ async def bundle_flap_loop(engine, target, router: dict, peer_ip: str, bundle_in
         await rated_sleep(random.uniform(FLAP_QUIET_MIN_SECONDS, FLAP_QUIET_MAX_SECONDS))
 
 
-async def down_router_loop(engine, target, router: dict, interfaces: list[str]) -> None:
+async def down_router_loop(engine, target, fleet: Fleet, router: dict, interfaces: list[str]) -> None:
     interface = random.choice(interfaces) if interfaces else random.choice(INTERFACES)
     while True:
         await wait_while_l3_off()
+        if not fleet.is_primary(router["mgmt_ip"]):
+            await asyncio.sleep(NOT_IN_FLEET_RECHECK_SECONDS)
+            continue
         await send_trap(engine, target, LINK_DOWN_OID, router, interface)
         await asyncio.sleep(random.uniform(120, 300))
         await send_trap(engine, target, LINK_UP_OID, router, interface)
         await rated_sleep(random.uniform(300, 600))
 
 
-async def rated_sleep(seconds: float) -> None:
+async def rated_sleep(seconds: float, layer: str = "l3") -> None:
     """Sleeps `seconds` of default-pace time, sped up or slowed down by the
-    L3 rate - re-read every SIMULATION_POLL_SECONDS, so moving the slider
-    applies to waits already in progress. At rate 0 it never returns while
-    the rate stays 0, which is what stops the loop's events."""
+    L3 (or, with layer="l1", the L1) rate - re-read every
+    SIMULATION_POLL_SECONDS, so moving the slider applies to waits already
+    in progress. At rate 0 it never returns while the rate stays 0, which
+    is what stops the loop's events."""
     remaining = seconds
     while remaining > 0:
+        rate = _l1_rate if layer == "l1" else _l3_rate
         step = SIMULATION_POLL_SECONDS
-        if _l3_rate > 0 and remaining / _l3_rate < step:
-            step = remaining / _l3_rate
+        if rate > 0 and remaining / rate < step:
+            step = remaining / rate
         await asyncio.sleep(step)
-        remaining -= step * _l3_rate
+        remaining -= step * rate
 
 
 async def wait_while_l3_off() -> None:
@@ -583,6 +659,89 @@ async def scheduled_bundle_failure_loop(engine, target, fleet: Fleet) -> None:
         await rated_sleep(BUNDLE_FAILURE_INTERVAL_SECONDS)
 
 
+async def play_events(engine, target, events: list) -> None:
+    """Sends optical_faults.Event's at their scheduled delays (each relative
+    to the start of the batch)."""
+    elapsed = 0.0
+    for event in events:
+        if event.delay > elapsed:
+            await asyncio.sleep(event.delay - elapsed)
+            elapsed = event.delay
+        await send_trap(
+            engine, target, event.oid, {"mgmt_ip": event.ip}, interface=event.interface,
+            bgp_peer_ip=event.bgp_peer_ip, condition=event.condition,
+        )
+
+
+async def run_optical_scenario(engine, target, scenario, duration: float) -> None:
+    """One fault: the cascade of alarms, `duration` seconds of outage, then
+    the repair's clears. The ground truth only goes to the log - the traps
+    themselves don't say where the fault is."""
+    logger.info(
+        "GROUND TRUTH [%s] %s: %d alarms, repair in %.0fs", scenario.corridor, scenario.summary, len(scenario.raise_events), duration
+    )
+    await play_events(engine, target, scenario.raise_events)
+    await asyncio.sleep(duration)
+    logger.info("REPAIRED [%s] %s", scenario.corridor, scenario.summary)
+    await play_events(engine, target, scenario.clear_events)
+
+
+async def optical_fault_loop(engine, target, fleet: Fleet) -> None:
+    """Faults on the modelled optical corridors (cable cut, single fiber,
+    amplifier, transponder trunk, patch cord - see optical_faults.py), one
+    per corridor at a time, paced by the L1 slider."""
+    busy: set[str] = set()
+
+    async def run(name, scenario, duration):
+        try:
+            await run_optical_scenario(engine, target, scenario, duration)
+        finally:
+            busy.discard(name)
+
+    while True:
+        await rated_sleep(random.uniform(OPTICAL_FAULT_INTERVAL_MIN_SECONDS, OPTICAL_FAULT_INTERVAL_MAX_SECONDS), "l1")
+        if not _simulation_enabled:
+            continue
+        free = [c for c in fleet.corridors if c["name"] not in busy and c.get("spans") and c.get("paths")]
+        if not free:
+            continue
+        corridor = random.choice(free)
+        try:
+            scenario = optical_faults.random_scenario(optical_faults.Topology(corridor, fleet.devices, fleet.bgp_bundles))
+        except (KeyError, IndexError, StopIteration) as exc:
+            logger.warning("Couldn't build a fault on corridor %s: %s", corridor["name"], exc)
+            continue
+        busy.add(corridor["name"])
+        duration = random.uniform(OPTICAL_FAULT_DURATION_MIN_SECONDS, OPTICAL_FAULT_DURATION_MAX_SECONDS)
+        spawn(run(corridor["name"], scenario, duration))
+
+
+async def optical_noise_loop(engine, target, fleet: Fleet) -> None:
+    """Stray optical alarms (receive power degrade, fan, temperature, laser
+    bias) on random corridor elements - the background a real fault has to
+    be picked out of."""
+    if OPTICAL_NOISE_INTERVAL_SECONDS <= 0:
+        return
+
+    async def one(topo):
+        raise_, clear, label = optical_faults.random_noise(topo)
+        logger.info("noise: %s", label)
+        await play_events(engine, target, [raise_])
+        await asyncio.sleep(random.uniform(60, 300))
+        await play_events(engine, target, [clear])
+
+    while True:
+        corridors = fleet.corridors
+        interval = OPTICAL_NOISE_INTERVAL_SECONDS / max(len(corridors), 1)
+        await rated_sleep(random.uniform(0.5 * interval, 1.5 * interval), "l1")
+        if not corridors or not _simulation_enabled:
+            continue
+        try:
+            spawn(one(optical_faults.Topology(random.choice(corridors), fleet.devices, fleet.bgp_bundles)))
+        except (KeyError, IndexError) as exc:
+            logger.warning("Couldn't build optical noise: %s", exc)
+
+
 # A customer CPE is single-homed: it only ever has the one uplink port.
 CUSTOMER_UPLINK_INTERFACE = "GigabitEthernet0/0"
 
@@ -684,6 +843,11 @@ async def main() -> None:
         fleet.update(*fetch_fleet_from_backend())
     except (requests.RequestException, KeyError) as exc:
         logger.warning("Couldn't load the fleet from the backend, simulating the seed files only: %s", exc)
+    try:
+        fleet.set_corridors(*fetch_corridors_from_backend())
+        logger.info("Simulating faults on %d optical corridor(s)", len(fleet.corridors))
+    except (requests.RequestException, KeyError) as exc:
+        logger.warning("Couldn't load the optical corridors: %s", exc)
 
     engine = SnmpEngine()
     target = UdpTransportTarget((TRAP_HOST, TRAP_PORT))
@@ -725,10 +889,15 @@ async def main() -> None:
         customer_event_loop(engine, target, fleet),
         scheduled_bgp_incident_loop(engine, target, fleet),
         scheduled_bundle_failure_loop(engine, target, fleet),
+        optical_fault_loop(engine, target, fleet),
+        optical_noise_loop(engine, target, fleet),
     ]
-    tasks += [flap_loop(engine, target, r, primary_interfaces.get(r["mgmt_ip"], [])) for r in flapping_routers]
-    tasks += [down_router_loop(engine, target, r, primary_interfaces.get(r["mgmt_ip"], [])) for r in down_routers]
-    tasks += [bundle_flap_loop(engine, target, router, peer_ip, bundle_info) for router, peer_ip, bundle_info in flapping_bundles]
+    tasks += [flap_loop(engine, target, fleet, r, primary_interfaces.get(r["mgmt_ip"], [])) for r in flapping_routers]
+    tasks += [down_router_loop(engine, target, fleet, r, primary_interfaces.get(r["mgmt_ip"], [])) for r in down_routers]
+    tasks += [
+        bundle_flap_loop(engine, target, fleet, router, peer_ip, bundle_info)
+        for router, peer_ip, bundle_info in flapping_bundles
+    ]
 
     await asyncio.gather(*tasks)
 

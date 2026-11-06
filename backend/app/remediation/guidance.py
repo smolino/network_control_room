@@ -11,6 +11,8 @@ other kind.
 """
 
 from app.fault_location import locate_fault
+from app.models import AlarmClass
+from app.snmp.alarm_classes import condition_for
 from app.models import Incident, IncidentType, Router, TeamKind
 
 # incident_type -> (team_kind, "what happened" template, "what to do" template)
@@ -138,6 +140,10 @@ def generate_analysis(incident: Incident, router: Router) -> dict:
     )
     if location:
         description, solution = _fiber_fault_guidance(location)
+    elif incident.corridor_id is not None:
+        description, solution = _rca_guidance(incident, router)
+    elif incident.condition:
+        description, solution = _condition_guidance(incident, router)
 
     return {
         "incident_id": incident.id,
@@ -176,4 +182,93 @@ def _fiber_fault_guidance(location: dict) -> tuple[str, str]:
             " between - check the line card optics at the router end, then OTDR the span to locate the"
             " break."
         )
+    return description, solution
+
+
+def _condition_guidance(incident: Incident, router: Router) -> tuple[str, str]:
+    """An optical-element condition (LOS-P, LOS-O, EQPT, ...) - says what
+    the condition means on this port. Where along the path the fault is
+    comes from correlating the conditions along the corridor, not from one
+    alarm on its own."""
+    condition = condition_for(incident.condition)
+    meaning = condition.meaning if condition else incident.condition
+    port = f" port {incident.interface_name}" if incident.interface_name else ""
+    role = router.element_role.value if router.element_role else "router"
+    description = f"{incident.condition} on {role} {router.hostname}{port}: {meaning}."
+    if incident.alarm_class == AlarmClass.TRANSPORT:
+        solution = (
+            "Check which element along the path lost light first: the span feeding the first element that"
+            " reports loss of signal (with its OSC lost too) is the suspect. If only this element alarms,"
+            " check its own input patching and optics before dispatching to the span."
+        )
+    else:
+        solution = (
+            f"Hardware/environment alarm on {router.hostname} - not a fiber fault. Dispatch site maintenance"
+            " to inspect or replace the card/unit named in the alarm."
+        )
+    return description, solution
+
+
+def _rca_guidance(incident: Incident, router: Router) -> tuple[str, str]:
+    """A root cause app.rca inferred on a modelled corridor: who to send
+    where, with the span's provider and both ends' sites when it's a span."""
+    from sqlalchemy.orm import object_session
+
+    from app.models import FiberSpan
+
+    description = incident.description or ""
+    span = None
+    db = object_session(incident)
+    if db is not None and incident.fault_segment_index is not None:
+        span = (
+            db.query(FiberSpan)
+            .filter(FiberSpan.corridor_id == incident.corridor_id, FiberSpan.seq == incident.fault_segment_index)
+            .first()
+        )
+
+    def site(device) -> str:
+        s = device.site
+        where = f"{s.name}, {s.city}" if s and s.city and s.city not in s.name else (s.name if s else device.hostname)
+        coords = f" ({s.latitude:.4f}, {s.longitude:.4f})" if s else ""
+        return f"{device.hostname} at {where}{coords}"
+
+    kind = incident.condition
+    if kind in ("CABLE-CUT", "FIBER-CUT") and span is not None:
+        ref = f", circuit {span.provider_circuit_id}" if span.provider_circuit_id else ""
+        which = "both fibers of the pair" if kind == "CABLE-CUT" else "one fiber of the pair (the other direction still carries light)"
+        solution = (
+            f"Open a ticket with {span.provider or 'the fiber provider'}{ref} for the dark-fiber span between"
+            f" {site(span.from_device)} (end {span.a_end or 'A'}) and {site(span.to_device)} (end {span.b_end or 'B'}),"
+            f" {span.length_km or '?'} km: {which} lost. Ask for an OTDR trace from the nearest end to locate the break;"
+            " nothing needs replacing at either site - the amplifier after the break reports its input lost, not a"
+            " failure of its own."
+        )
+    elif kind == "AMP-FAIL":
+        solution = (
+            f"Dispatch to {site(router)}: the amplifier card for that direction stopped amplifying (the next site's"
+            " supervisory channel is fine, so the fiber is intact). Replace the card; traffic resumes as soon as it's"
+            " back in service."
+        )
+    elif kind == "TRUNK-FAIL":
+        solution = (
+            f"Dispatch to {site(router)}: check the transponder trunk's transmit power and the patch cord from the"
+            " trunk to the mux add port; replace the trunk optics if it doesn't transmit."
+        )
+    elif kind == "CHANNEL-FAIL":
+        solution = (
+            "Check the mux/demux channel for this wavelength at both terminals (add/drop patching and channel"
+            " provisioning) - the line and the other wavelengths are fine."
+        )
+    elif kind == "PATCH-CORD":
+        solution = (
+            f"Dispatch to {site(router)}: clean or replace the patch cord between the router port and the transponder"
+            " client port named above, and check both optics' power."
+        )
+    elif kind == "OSC-FAIL":
+        solution = (
+            f"Low urgency, traffic unaffected: check the OSC card/filter at {site(router)} - the span itself carries"
+            " traffic, so the fiber is fine. Until fixed, faults on this span can't be told apart from amplifier failures."
+        )
+    else:
+        solution = "Review the correlated alarms listed as symptoms of this incident."
     return description, solution

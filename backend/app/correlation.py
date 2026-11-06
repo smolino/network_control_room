@@ -26,7 +26,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app import topology_graph
-from app.models import AlarmLayer, Incident, IncidentStage, IncidentStatus
+from app.models import AlarmClass, AlarmLayer, Incident, IncidentStage, IncidentStatus
 
 # How far apart an L1 incident and an L3 incident on the same peering can
 # open and still be considered cause and symptom, rather than independent
@@ -63,6 +63,9 @@ def find_open_l1_root_cause(db: Session, router_id: int, interface_name: str | N
         .filter(
             Incident.peering_id.in_(peering_ids),
             Incident.layer == AlarmLayer.L1,
+            # Only a transport fault can take the path down - a fan or
+            # card alarm on the same element is no root cause.
+            or_(Incident.alarm_class == AlarmClass.TRANSPORT, Incident.alarm_class.is_(None)),
             Incident.status == IncidentStatus.OPEN,
             Incident.opened_at >= window_start,
         )

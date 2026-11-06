@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.bundles import ISIS_PROCESS_TAG, bundle_and_member_names, isis_net
 from app.models import (
     BgpPeering,
+    ElementRole,
     Incident,
     IncidentType,
     InterfaceBundle,
@@ -85,7 +86,7 @@ NOTIFY_ONLY_REASONS: dict[IncidentType, str] = {
     IncidentType.CONFIG_CHANGE: "Configuration was already changed out-of-band — snapshot kept for diffing, no action taken",
     IncidentType.BFD_SESSION_DOWN: "Fast-failure-detection event — carrier-side/physical, needs NOC/carrier engagement rather than a config push",
     IncidentType.ISIS_NBR_DOWN: "IS-IS adjacency lost on a bundle member interface — likely a transient physical issue; the peering itself is only affected once every member of the bundle has lost adjacency, but NOC is notified for the individual member too",
-    IncidentType.OPTICAL_ALARM: "Transceiver power threshold crossed — hardware/fiber issue, cannot be fixed by config change, NOC notified",
+    IncidentType.OPTICAL_ALARM: "Optical transport alarm (loss of light/frame on the path) — fiber or optical hardware, cannot be fixed by config change, NOC notified",
     IncidentType.FAN_FAILURE: "Chassis fan failure — hardware issue, NOC/dispatch notified",
     IncidentType.PSU_FAILURE: "Redundant power supply failure — hardware issue, NOC/dispatch notified",
     IncidentType.HIGH_MEMORY: "Memory pool exhaustion — flagged for human review rather than an automated process restart",
@@ -238,6 +239,34 @@ def maybe_remediate(db: Session, router: Router, incident: Incident) -> dict | N
 
     if incident.incident_type not in AUTO_HEAL_ELIGIBLE_TYPES:
         return None
+
+    # Optical elements (transponders, DWDM terminals, amplifiers) have no
+    # router config to snapshot or playbook to run - always a human's call.
+    if router.element_role not in (None, ElementRole.ROUTER):
+        now = datetime.now(timezone.utc)
+        what = f"{incident.condition} " if incident.condition else ""
+        action = RemediationAction(
+            incident_id=incident.id,
+            router_id=router.id,
+            backup_id=None,
+            incident_type=incident.incident_type.value,
+            action_type=RemediationActionType.NOTIFY_ONLY,
+            status=RemediationStatus.SKIPPED,
+            finished_at=now,
+            summary=f"{what}alarm on {router.element_role.value} {router.hostname} — no automated action on optical elements, NOC notified"[:255],
+            log=f"[{now.isoformat()}] {router.hostname} is a {router.element_role.value}: no config backup, no playbook.\n",
+        )
+        db.add(action)
+        db.flush()
+        return {
+            "id": action.id,
+            "incident_id": incident.id,
+            "router_id": router.id,
+            "backup_id": None,
+            "action_type": action.action_type.value,
+            "status": action.status.value,
+            "summary": action.summary,
+        }
 
     backup = backup_router_config(
         db,

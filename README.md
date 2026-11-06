@@ -496,6 +496,154 @@ New nullable columns like `fault_segment_index` are added to an existing
 database automatically at startup (`add_missing_columns` in `app/db.py`),
 since the project has no migration tool.
 
+## Optical corridors (real L1 path)
+
+The abstract links above model a fiber run as evenly spaced "repeaters". An
+**optical corridor** models it the way the signal really travels, so a
+dark-fiber fault can be located from *where along the path* the alarms
+start instead of being announced by a synthetic trap:
+
+```
+router port -> NCS1004 client -> trunk (one wavelength) -> terminal mux -> booster
+  -> span 1 -> ILA amp -> span 2 -> ... -> far terminal preamp -> demux
+  -> far trunk -> client -> router port
+```
+
+* **Devices** stay in the `routers` table with an `element_role`
+  (`router` | `transponder` | `terminal` | `ila`), so traps and incidents
+  work for them unchanged. Only routers run IS-IS/BGP/bundles - the
+  simulator's router events skip optical elements.
+* **Tables** (`backend/app/models.py`): `sites`, `corridors`, `cards`,
+  `ports`, `fiber_spans` (rented dark fiber, provider + A/B ends),
+  `optical_paths` + `path_hops` (each wavelength per direction, hop by hop,
+  plus the OSC of every span) and `client_circuits` (router port <->
+  transponder client <-> wavelength <-> far end). A link carried by a
+  corridor has `bgp_peerings.corridor_id`; its bundle members are the real
+  router ports.
+* **Neo4j** mirrors all of it (`Site`, `Port`, `Span`, `OpticalPath`,
+  `Circuit`, see `app/topology_graph.py`) with the lookups the root-cause
+  engine uses: what a span/device carries, what is downstream of a port,
+  which span feeds a port.
+
+Corridors are written from a spec file. A layout sheet like the
+Bilbao-Madrid diagram is converted once, with the data the sheet doesn't
+hold (IPs, coordinates, existing hostnames) in an overrides file; every
+assumption the converter makes is listed in the spec and printed:
+
+```bash
+./scripts/convert-corridor-sheet.py seed/corridors/bio1-mad1.sheet.csv \
+    seed/corridors/bio1-mad1.overrides.json > seed/corridors/bio1-mad1.json
+export SERVICE_API_TOKEN=...
+./scripts/import-corridor.py seed/corridors/bio1-mad1.json --dry-run   # validate only
+./scripts/import-corridor.py seed/corridors/bio1-mad1.json --prune     # import
+```
+
+`--prune` removes L3 links that have an optical element on a side (e.g. a
+DWDM terminal previously modelled as a router). Importing is idempotent.
+API: `GET /api/corridors[/{id}]`, `POST /api/corridors/import|validate`,
+`DELETE /api/corridors/{id}`, `GET /api/corridors/{id}/spans/{seq}/carried`,
+`GET /api/corridors/devices/{id}/carried`,
+`GET /api/corridors/ports/{id}/downstream|upstream-span?direction=AZ|ZA`.
+On the map (L1 layer) a corridor is drawn through its real sites, with a
+tooltip per span. Tests: `backend/tests/test_corridors.py`.
+
+## Alarm classes and the equipment filter
+
+Every trap gets an **alarm class** (`backend/app/snmp/alarm_classes.py`),
+stored on the alarm (`trap_events.alarm_class`) and on any incident it opens:
+
+| Class | What | Examples |
+|---|---|---|
+| `transport` | the optical path lost light or framing - the only class that can be a fiber-fault root cause | LOS-P, LOS-O (OSC), LOS, OPWR-LFAIL, LOF, OTU/ODU-AIS, BDI, client LF/RF |
+| `logical` | what L3 sees as a consequence | linkDown, IS-IS adjacency, BFD, BGP |
+| `equipment` | hardware and environment | card (EQPT/MEA), fan, power, temperature, CPU, memory, sensor thresholds |
+| `management` | device management | coldStart, authentication failure, config change |
+
+**Settings > Alarm filter** chooses which classes never open an incident
+(default: equipment). Filtered alarms are still recorded (`filtered = true`
+in the device's alarm history) and open incidents of a filtered class leave
+Human Review. Transport and logical alarms can't be filtered.
+API: `POST /api/simulation/alarm-filter {"classes": ["equipment", "management"]}`.
+
+Optical elements report **conditions** (Cisco ONS 15454 / NCS1004 codes).
+Mediation normalizes them to `OPTICAL_ALARM_OID` / `OPTICAL_ALARM_CLEAR_OID`
+(`1.3.6.1.4.1.9.9.9999.5.1/.2`) with the code in `CONDITION_OID` (`.5.3`)
+and the port in the interface varbind. Each condition has its own incident
+(dedup includes the code), cleared only by the matching clear. Conditions
+that are state rather than a fault (ALS) and unknown codes stay alarms.
+Optical elements never get a config backup or playbook - notify-only.
+Layer follows the class: transport = L1, logical = L3, equipment and
+management = the element's own layer. Priority gives the extra point to
+transport alarms, and only transport alarms can claim L3 symptoms.
+
+## Simulated optical faults (realistic L1 alarms)
+
+On a modelled corridor the simulator (`simulator/optical_faults.py`) breaks
+something physical and has **every affected element report only what it
+sees on its own ports** - no trap says where the fault is (the ground truth
+only goes to the simulator log, `GROUND TRUTH [...]`):
+
+| Scenario | What the network reports |
+|---|---|
+| `cable_cut` (span k, both fibers) | first site each way: LOS-P + LOS-O; every site further on: LOS-P (OSC is fine - it's regenerated per span) and ALS on its output; far demux DROP and transponder trunk LOS; client LF; routers link down, IS-IS down, BGP once the bundle is gone |
+| `fiber_cut` (span k, one direction) | the same, one direction only; the transmitting transponder gets OTU-BDI over the healthy return path |
+| `amp_failure` (ILA, one direction) | EQPT on the card (equipment - filtered by default), next site LOS-P **without** LOS-O |
+| `trunk_failure` (one wavelength) | EQPT on the transponder, mux ADD-λ LOS-P, far DROP-λ LOS-P and trunk LOS - amplifiers stay lit by the other wavelength |
+| `patch_cord` (router <-> transponder client) | client LOS at the near transponder, LF at the far one, both routers drop that link |
+
+Shared line ports only go dark when every wavelength through them is dark.
+Alarms arrive with jitter (out of order); the repair sends the matching
+clears. Background noise (power degrade, fan, temperature, laser bias) runs
+alongside. Pace: `OPTICAL_FAULT_INTERVAL_MIN/MAX_SECONDS`,
+`OPTICAL_FAULT_DURATION_MIN/MAX_SECONDS`, `OPTICAL_NOISE_INTERVAL_SECONDS`,
+divided by the L1 slider. Trigger one on demand:
+
+```bash
+docker compose exec simulator python inject_fault.py cable_cut --span 4 --duration 60
+docker compose exec simulator python inject_fault.py amp_failure --ila a-0004-MAD01-BIO01 --direction AZ
+```
+
+A link down on a bundle member no longer marks the router down (that's the
+bundle's redundancy at work); only unprotected ports change router status.
+Tests: `simulator/tests/test_optical_faults.py`.
+
+## Root-cause analysis on corridors
+
+`backend/app/rca.py` turns the optical alarms active on a corridor into
+diagnoses by walking its real paths - no alarm says where the fault is:
+
+1. **Where light is first lost**, per direction: the first line element
+   whose input is dark (LOS-P/LOS/OPWR-LFAIL). Everything after it is
+   propagation.
+2. **Fiber or amplifier**: the OSC is regenerated at every site, so it only
+   dies with its own span's fiber. Dark input + LOS-O = the span is broken;
+   dark input with the OSC up = the amplifier before it failed.
+3. Both directions on one span = `CABLE-CUT`, one = `FIBER-CUT`; otherwise
+   `AMP-FAIL`. One dark wavelength with the line lit: `TRUNK-FAIL` (mux add
+   port dark too) or `CHANNEL-FAIL`. Client-side only: `PATCH-CORD`. OSC
+   lost with traffic flowing: `OSC-FAIL`.
+
+Each diagnosis is **one root incident** (OPTICAL_ALARM, transport; the code
+in `condition`, the span in `fault_segment_index`, `corridor_id`/`rca_key`
+set) attached to the element it points at, and every open incident it
+explains - optical alarms downstream, client faults, router link/IS-IS and
+BGP on the circuits and L3 links it takes down - is linked to it as a
+symptom (suppressed, no auto-heal of its own). As more alarms arrive the
+same root is refined (a fiber cut that turns out to be the whole cable keeps
+its incident); when the alarms clear, it resolves. Unrelated alarms (a power
+degrade elsewhere) stay separate.
+
+Evidence comes from the alarm history, so equipment alarms the filter keeps
+out of the incident list still count (an amplifier's EQPT). The correlator
+runs it every sweep, once the corridor's optical alarms have been quiet for
+`RCA_HOLD_SECONDS` (5s) - diagnosing the first few of 60 alarms would blame
+the wrong span. The Human Review analysis of a root names the provider, both
+ends' sites with coordinates and what to ask for (OTDR) or whom to dispatch.
+
+`GET /api/corridors/{id}/diagnosis` shows the current conclusions (read-only).
+`backend/tests/test_rca.py` replays every simulator scenario through the real
+classifier and checks the diagnosis against the ground truth.
+
 ## Customer impact (blast radius)
 
 Every open, service-affecting incident (link down/flap, BGP, BFD, IS-IS,
@@ -877,8 +1025,10 @@ wrong.
 ## HTTPS / reverse proxy
 
 TLS is **not** part of this project. The `frontend` container serves plain
-HTTP only (`frontend/nginx.conf`: static app plus `/api` and `/ws` proxied to
-`backend`). In production, an nginx installed and managed separately on the
+HTTP only (`frontend/nginx.conf.template`: static app plus `/api` and `/ws`
+proxied to `backend`, re-resolved every 10s so a recreated backend container
+with a new IP is picked up without restarting the frontend; on Kubernetes set
+`BACKEND_UPSTREAM` to the Service's full name, see `k8s/10-frontend.yaml`). In production, an nginx installed and managed separately on the
 host terminates TLS and proxies to it — bind `frontend` to loopback with
 `HTTP_PORT=127.0.0.1:8080` in `.env` and point that nginx at
 `http://127.0.0.1:8080`, forwarding the WebSocket upgrade headers for `/ws/`

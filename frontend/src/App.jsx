@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import {
   connectEvents,
   fetchBgpPeerings,
+  fetchCorridors,
   fetchIncidentImpact,
   fetchIncidentQueue,
   fetchIncidents,
@@ -106,6 +107,7 @@ export default function App() {
   const [queue, setQueue] = useState([]);
   const [stats, setStats] = useState(null);
   const [peerings, setPeerings] = useState([]);
+  const [corridors, setCorridors] = useState([]);
   const [teams, setTeams] = useState([]);
   const [selectedRouterId, setSelectedRouterId] = useState(null);
   const [connected, setConnected] = useState(false);
@@ -191,13 +193,14 @@ export default function App() {
   }, []);
 
   const reloadAll = useCallback(async () => {
-    const [r, i, ci, q, s, p] = await Promise.all([
+    const [r, i, ci, q, s, p, c] = await Promise.all([
       fetchRouters(),
       fetchIncidents({ limit: 200, routerType: "primary" }),
       fetchIncidents({ limit: 200, routerType: "customer" }),
       fetchIncidentQueue(),
       fetchStats(),
       fetchBgpPeerings(),
+      fetchCorridors(),
     ]);
     setRouters(r);
     setIncidents(i);
@@ -205,6 +208,7 @@ export default function App() {
     setQueue(q);
     setStats(s);
     setPeerings(p);
+    setCorridors(c);
     await reloadTeams();
   }, [reloadTeams]);
 
@@ -260,6 +264,13 @@ export default function App() {
           return;
         }
 
+        // A corridor was imported or removed - devices, links and the
+        // optical path all changed at once.
+        if (msg.type === "fleet_changed") {
+          reloadAll().catch(console.error);
+          return;
+        }
+
         // "trap" (a new alarm and whatever it changed) and "incident_updated"
         // (sweeper/operator actions) carry the same incidents/routers lists.
         if (msg.type !== "trap" && msg.type !== "incident_updated") return;
@@ -300,7 +311,7 @@ export default function App() {
       clearTimeout(retryTimer);
       ws?.close();
     };
-  }, [authenticated, logout, resetAfterFleetDelete]);
+  }, [authenticated, logout, resetAfterFleetDelete, reloadAll]);
 
   const selectedRouter = routers.find((r) => r.id === selectedRouterId) || null;
 
@@ -392,6 +403,7 @@ export default function App() {
               <MapView
                 routers={routers}
                 peerings={peerings}
+                corridors={corridors}
                 onFleetChanged={reloadAll}
                 impactHighlight={impactHighlight}
                 onClearImpact={() => setImpactHighlight(null)}

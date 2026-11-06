@@ -185,6 +185,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter, onSho
   const [stageFilter, setStageFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [layerFilter, setLayerFilter] = useState("all");
+  const [classFilter, setClassFilter] = useState("all");
   // Symptomatic incidents (root_cause_incident_id set) are the L3 fallout
   // of an open L1 fiber fault - hidden by default so the list surfaces the
   // root cause instead of a wall of correlated noise, per the design doc's
@@ -202,6 +203,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter, onSho
     if (statusFilter !== "all" && i.status !== statusFilter) return false;
     if (stageFilter !== "all" && i.stage !== stageFilter) return false;
     if (layerFilter !== "all" && i.layer !== layerFilter) return false;
+    if (classFilter !== "all" && i.alarm_class !== classFilter) return false;
     if (hideSymptomatic && i.root_cause_incident_id != null) return false;
     return typeFilter === "all" || i.incident_type === typeFilter;
   });
@@ -236,6 +238,13 @@ export default function IncidentList({ incidents, routers, onSelectRouter, onSho
           <option value="all">All layers</option>
           <option value="L1">L1 (physical)</option>
           <option value="L3">L3 (logical)</option>
+        </select>
+        <select value={classFilter} onChange={(e) => setClassFilter(e.target.value)}>
+          <option value="all">All alarm classes</option>
+          <option value="transport">Transport (fiber/optical path)</option>
+          <option value="logical">Logical (link, IS-IS, BGP)</option>
+          <option value="equipment">Equipment (hardware/environment)</option>
+          <option value="management">Management</option>
         </select>
         <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer" }}>
           <input
@@ -278,7 +287,14 @@ export default function IncidentList({ incidents, routers, onSelectRouter, onSho
                   <td>
                     <span className={`badge ${i.layer === "L1" ? "down" : "unknown"}`}>{i.layer}</span>
                   </td>
-                  <td>{i.incident_type}</td>
+                  <td>
+                    {i.incident_type}
+                    {(i.condition || i.alarm_class) && (
+                      <div style={{ fontSize: "0.7rem", color: "#9aa4bf", marginTop: "0.15rem" }}>
+                        {[i.condition, i.alarm_class].filter(Boolean).join(" · ")}
+                      </div>
+                    )}
+                  </td>
                   <td>
                     <span className="link" onClick={() => onSelectRouter(i.router_id)}>
                       {routerById[i.router_id]?.hostname || `#${i.router_id}`}

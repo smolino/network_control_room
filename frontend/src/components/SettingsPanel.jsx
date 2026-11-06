@@ -13,6 +13,7 @@ import {
   resetFleet,
   resolveAllOpenIncidents,
   setAutoHeal,
+  setAlarmFilter,
   setSimulationEnabled,
   setSimulationRates,
   startOtpSetup,
@@ -647,6 +648,7 @@ function SimulationTab({ onFleetReset }) {
       )}
 
       {rates && <AutoHealToggle initial={rates.auto_heal} canEdit={isAdmin} />}
+      {rates && <AlarmFilter initial={rates.filtered_alarm_classes ?? []} canEdit={isAdmin} />}
       {rates && <IncidentRates initial={rates} canEdit={isAdmin} />}
       {isAdmin && <ResetIncidents />}
       {isAdmin && <DeleteFleet onFleetReset={onFleetReset} />}
@@ -689,6 +691,70 @@ function AutoHealToggle({ initial, canEdit }) {
           : "No playbooks run and nothing resolves on its own - every incident goes to Human Review and stays open until an engineer resolves it."}
       </p>
       {!canEdit && <p className="settings-hint">Only admins can change auto-heal.</p>}
+    </>
+  );
+}
+
+// Which alarm classes never open an incident - see
+// backend/app/snmp/alarm_classes.py. Transport (loss of light/frame) and
+// logical (link, IS-IS, BGP) alarms always do.
+const FILTERABLE_CLASSES = [
+  {
+    value: "equipment",
+    label: "Filter hardware & environment alarms",
+    hint: "Card, fan, power, temperature, CPU, memory and sensor alarms",
+  },
+  {
+    value: "management",
+    label: "Filter management alarms",
+    hint: "Authentication failures and configuration changes",
+  },
+];
+
+function AlarmFilter({ initial, canEdit }) {
+  const [classes, setClasses] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const toggle = (value) => async (e) => {
+    const next = e.target.checked ? [...classes, value] : classes.filter((c) => c !== value);
+    setSaving(true);
+    setError("");
+    try {
+      const s = await setAlarmFilter(next);
+      setClasses(s.filtered_alarm_classes);
+    } catch (err) {
+      setError(`Couldn't update the alarm filter: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <h3>Alarm filter</h3>
+      {error && <div className="login-error">{error}</div>}
+      {FILTERABLE_CLASSES.map((c) => (
+        <label
+          key={c.value}
+          title={c.hint}
+          style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: canEdit ? "pointer" : "default" }}
+        >
+          <input
+            type="checkbox"
+            checked={classes.includes(c.value)}
+            disabled={!canEdit || saving}
+            onChange={toggle(c.value)}
+          />
+          {c.label}
+        </label>
+      ))}
+      <p className="settings-hint">
+        Filtered alarms are still recorded in each device's alarm history, but don't open incidents, and open
+        incidents of that kind leave Human Review - so the board shows what the fiber network is doing.
+        Transport (loss of light/frame) and logical (link, IS-IS, BGP) alarms are never filtered.
+      </p>
+      {!canEdit && <p className="settings-hint">Only admins can change the alarm filter.</p>}
     </>
   );
 }
