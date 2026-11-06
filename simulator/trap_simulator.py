@@ -124,8 +124,11 @@ _simulation_enabled = True
 # below fires (1 = default pace, 0 = no events) - see rated_sleep. Also
 # polled by simulation_control_loop.
 _l3_rate = 1.0
-# Same for the L1 slider - drives the optical corridor fault loop.
+# Same for the L1 slider (the backend's abstract fiber cuts read it there).
 _l1_rate = 1.0
+# Settings > Simulation's optical-failures slider - drives the corridor fault
+# and optical noise loops below.
+_optical_rate = 1.0
 
 # Bundle (Port-channel) members per BGP peering link - see
 # backend/app/bundles.py, which independently derives the identical
@@ -359,7 +362,7 @@ async def simulation_control_loop() -> None:
     cancel or restart any of their asyncio tasks. Uses requests (already a
     dependency for seeding) off the event loop via to_thread so a slow poll
     can't stall trap sending."""
-    global _simulation_enabled, _l3_rate, _l1_rate
+    global _simulation_enabled, _l3_rate, _l1_rate, _optical_rate
     while True:
         try:
             resp = await asyncio.to_thread(requests.get, f"{BACKEND_API_URL}/api/simulation/status", timeout=5)
@@ -377,6 +380,10 @@ async def simulation_control_loop() -> None:
             if l1_rate != _l1_rate:
                 logger.info("L1 event rate set to x%g", l1_rate)
             _l1_rate = l1_rate
+            optical_rate = float(status.get("optical_rate", 1.0))
+            if optical_rate != _optical_rate:
+                logger.info("Optical failure rate set to x%g", optical_rate)
+            _optical_rate = optical_rate
         except requests.RequestException as exc:
             logger.warning("Couldn't reach backend for simulation status: %s", exc)
         await asyncio.sleep(SIMULATION_POLL_SECONDS)
@@ -482,13 +489,13 @@ async def down_router_loop(engine, target, fleet: Fleet, router: dict, interface
 
 async def rated_sleep(seconds: float, layer: str = "l3") -> None:
     """Sleeps `seconds` of default-pace time, sped up or slowed down by the
-    L3 (or, with layer="l1", the L1) rate - re-read every
+    L3 (or, with layer="l1"/"optical", the L1/optical) rate - re-read every
     SIMULATION_POLL_SECONDS, so moving the slider applies to waits already
     in progress. At rate 0 it never returns while the rate stays 0, which
     is what stops the loop's events."""
     remaining = seconds
     while remaining > 0:
-        rate = _l1_rate if layer == "l1" else _l3_rate
+        rate = {"l1": _l1_rate, "optical": _optical_rate}.get(layer, _l3_rate)
         step = SIMULATION_POLL_SECONDS
         if rate > 0 and remaining / rate < step:
             step = remaining / rate
@@ -689,7 +696,7 @@ async def run_optical_scenario(engine, target, scenario, duration: float) -> Non
 async def optical_fault_loop(engine, target, fleet: Fleet) -> None:
     """Faults on the modelled optical corridors (cable cut, single fiber,
     amplifier, transponder trunk, patch cord - see optical_faults.py), one
-    per corridor at a time, paced by the L1 slider."""
+    per corridor at a time, paced by the optical-failures slider."""
     busy: set[str] = set()
 
     async def run(name, scenario, duration):
@@ -699,7 +706,7 @@ async def optical_fault_loop(engine, target, fleet: Fleet) -> None:
             busy.discard(name)
 
     while True:
-        await rated_sleep(random.uniform(OPTICAL_FAULT_INTERVAL_MIN_SECONDS, OPTICAL_FAULT_INTERVAL_MAX_SECONDS), "l1")
+        await rated_sleep(random.uniform(OPTICAL_FAULT_INTERVAL_MIN_SECONDS, OPTICAL_FAULT_INTERVAL_MAX_SECONDS), "optical")
         if not _simulation_enabled:
             continue
         free = [c for c in fleet.corridors if c["name"] not in busy and c.get("spans") and c.get("paths")]
@@ -733,7 +740,7 @@ async def optical_noise_loop(engine, target, fleet: Fleet) -> None:
     while True:
         corridors = fleet.corridors
         interval = OPTICAL_NOISE_INTERVAL_SECONDS / max(len(corridors), 1)
-        await rated_sleep(random.uniform(0.5 * interval, 1.5 * interval), "l1")
+        await rated_sleep(random.uniform(0.5 * interval, 1.5 * interval), "optical")
         if not corridors or not _simulation_enabled:
             continue
         try:

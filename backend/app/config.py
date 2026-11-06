@@ -36,6 +36,11 @@ class Settings:
     fiber_fault_interval_min_seconds: float = float(os.getenv("FIBER_FAULT_INTERVAL_MIN_SECONDS", "180"))
     fiber_fault_interval_max_seconds: float = float(os.getenv("FIBER_FAULT_INTERVAL_MAX_SECONDS", "360"))
     fiber_fault_duration_seconds: float = float(os.getenv("FIBER_FAULT_DURATION_SECONDS", "60"))
+    # Pace of the simulator's optical corridor faults (simulator/
+    # optical_faults.py) - the simulator reads the same variables; the
+    # backend only needs them for the Settings slider's "about N an hour".
+    optical_fault_interval_min_seconds: float = float(os.getenv("OPTICAL_FAULT_INTERVAL_MIN_SECONDS", "300"))
+    optical_fault_interval_max_seconds: float = float(os.getenv("OPTICAL_FAULT_INTERVAL_MAX_SECONDS", "600"))
 
     # Geocoder behind GET /api/geocode (Add Fleet city -> lat/lon), see
     # app/api/geocode.py. Point at a self-hosted Nominatim to avoid the

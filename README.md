@@ -643,7 +643,11 @@ Alarms arrive with jitter (out of order); the repair sends the matching
 clears. Background noise (power degrade, fan, temperature, laser bias) runs
 alongside. Pace: `OPTICAL_FAULT_INTERVAL_MIN/MAX_SECONDS`,
 `OPTICAL_FAULT_DURATION_MIN/MAX_SECONDS`, `OPTICAL_NOISE_INTERVAL_SECONDS`,
-divided by the L1 slider. Trigger one on demand:
+divided by the **Optical failures (corridors)** slider in Settings >
+Simulation (0 = none, up to x5; the L1 slider only paces the abstract fiber
+cuts on links without a corridor). Set the backend's
+`OPTICAL_FAULT_INTERVAL_MIN/MAX_SECONDS` to the same values so the slider's
+"up to about N an hour" estimate matches. Trigger one on demand:
 
 ```bash
 docker compose exec simulator python inject_fault.py cable_cut --span 4 --duration 60

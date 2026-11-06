@@ -52,6 +52,9 @@ SEED_DEMO_FLEET = "seed_demo_fleet"
 # a tuned demo keeps its pace across redeploys.
 L1_RATE = "l1_incident_rate"
 L3_RATE = "l3_incident_rate"
+# Faults on modelled optical corridors (cable/fiber cuts, amplifier,
+# transponder and patch-cord failures - simulator/optical_faults.py).
+OPTICAL_RATE = "optical_incident_rate"
 MAX_RATE = 5.0
 
 
@@ -68,6 +71,11 @@ class SimulationStatusOut(SimulationStatus):
     # Average fiber cuts per hour at l1_rate 1, for the Settings slider's
     # estimate.
     l1_base_per_hour: float = 0.0
+    optical_rate: float = 1.0
+    # Average optical corridor faults per hour at optical_rate 1, and how
+    # many corridors they're spread over (none = nothing to simulate).
+    optical_base_per_hour: float = 0.0
+    optical_corridors: int = 0
     # Off: no playbooks and no automatic resolution - see
     # app.incidents.service.auto_heal_enabled.
     auto_heal: bool = True
@@ -83,6 +91,7 @@ class AlarmFilter(BaseModel):
 class SimulationRates(BaseModel):
     l1_rate: float | None = Field(default=None, ge=0, le=MAX_RATE)
     l3_rate: float | None = Field(default=None, ge=0, le=MAX_RATE)
+    optical_rate: float | None = Field(default=None, ge=0, le=MAX_RATE)
 
 
 class AutoHeal(BaseModel):
@@ -123,12 +132,16 @@ def l1_rate() -> float:
 
 def _status(db: Session) -> SimulationStatusOut:
     mean_interval = (settings.fiber_fault_interval_min_seconds + settings.fiber_fault_interval_max_seconds) / 2
+    optical_mean = (settings.optical_fault_interval_min_seconds + settings.optical_fault_interval_max_seconds) / 2
     return SimulationStatusOut(
         enabled=_state["enabled"],
         seed_demo_fleet=_seed_demo_fleet(db),
         l1_rate=_rate(db, L1_RATE),
         l3_rate=_rate(db, L3_RATE),
         l1_base_per_hour=3600 / mean_interval if settings.fiber_fault_simulation and mean_interval > 0 else 0.0,
+        optical_rate=_rate(db, OPTICAL_RATE),
+        optical_base_per_hour=3600 / optical_mean if optical_mean > 0 else 0.0,
+        optical_corridors=db.query(Corridor).count(),
         auto_heal=auto_heal_enabled(db),
         filtered_alarm_classes=sorted(filtered_classes(db), key=lambda c: c.value),
     )
@@ -149,7 +162,7 @@ def set_status(payload: SimulationStatus, db: Session = Depends(get_db)):
 
 @router.post("/rates", response_model=SimulationStatusOut, dependencies=[Depends(require_admin)])
 def set_rates(payload: SimulationRates, db: Session = Depends(get_db)):
-    for key, value in ((L1_RATE, payload.l1_rate), (L3_RATE, payload.l3_rate)):
+    for key, value in ((L1_RATE, payload.l1_rate), (L3_RATE, payload.l3_rate), (OPTICAL_RATE, payload.optical_rate)):
         if value is None:
             continue
         setting = db.get(AppSetting, key) or AppSetting(key=key)
