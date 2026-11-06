@@ -101,6 +101,7 @@ def delete_router_from_neo4j(router_id: int) -> None:
     delete_peering_from_neo4j - see api/routers.py:delete_router."""
     with get_driver().session() as session:
         session.run("MATCH (r:Router {id: $router_id}) DETACH DELETE r", router_id=router_id)
+        session.run("MATCH (s:Site) WHERE NOT (s)<-[:AT]-() DETACH DELETE s")
 
 
 def peering_ids_for_interface(router_id: int, interface_name: str) -> list[int]:
@@ -188,6 +189,8 @@ def delete_corridor_from_neo4j(corridor_id: int) -> None:
         # Ports nothing references any more (an optical element's, once its
         # corridor is gone).
         session.run("MATCH (p:Port) WHERE NOT (p)<-[:HOP]-() AND NOT (p)<-[:END]-() DETACH DELETE p")
+        # Sites no element is at any more.
+        session.run("MATCH (s:Site) WHERE NOT (s)<-[:AT]-() DETACH DELETE s")
 
 
 def sync_corridor_to_neo4j(db, corridor_id: int) -> None:
@@ -258,7 +261,11 @@ def sync_corridor_to_neo4j(db, corridor_id: int) -> None:
             UNWIND $devices AS d
             MERGE (r:Router {id: d.id})
             SET r.hostname = d.hostname, r.role = d.role
-            WITH r, d WHERE d.site IS NOT NULL
+            WITH r, d
+            // A device is at one site: drop the old link if it moved.
+            OPTIONAL MATCH (r)-[old:AT]->(:Site)
+            DELETE old
+            WITH DISTINCT r, d WHERE d.site IS NOT NULL
             MERGE (s:Site {code: d.site.code})
             SET s.name = d.site.name, s.kind = d.site.kind
             MERGE (r)-[:AT]->(s)
