@@ -53,6 +53,9 @@ def ensure_bundles_for_peering(
     peering_id: int,
     router: Router,
     peer_index: int,
+    bundle_name: str | None = None,
+    member_names: list[str] | None = None,
+    member_bandwidth_mbps: int = MEMBER_BANDWIDTH_MBPS,
 ) -> InterfaceBundle:
     """Idempotently creates (or returns the existing) InterfaceBundle + its
     member Interfaces for this router's side of this peering.
@@ -62,7 +65,12 @@ def ensure_bundles_for_peering(
     later, that index can already belong to a bundle of a *different*
     peering on this router. Reusing it would leave this peering with no
     bundle of its own (and point IS-IS events and the topology graph at
-    the wrong link), so the next free index is taken instead."""
+    the wrong link), so the next free index is taken instead.
+
+    `bundle_name`/`member_names` override the generated Port-channel/
+    FortyGigE names - for links whose real port names are known (an
+    optical corridor's router ports, see app.corridors). A taken
+    bundle_name still falls back to the next free generated one."""
     bundle = (
         db.query(InterfaceBundle)
         .filter(InterfaceBundle.router_id == router.id, InterfaceBundle.peering_id == peering_id)
@@ -72,9 +80,22 @@ def ensure_bundles_for_peering(
         return bundle
 
     taken = {name for (name,) in db.query(InterfaceBundle.name).filter(InterfaceBundle.router_id == router.id)}
-    while bundle_and_member_names(peer_index)[0] in taken:
-        peer_index += 1
-    bundle_name, member_names = bundle_and_member_names(peer_index)
+    if bundle_name is None or bundle_name in taken:
+        if bundle_name is not None:
+            # Same family as the requested name (e.g. Bundle-Ether2 after
+            # Bundle-Ether1), not a Port-channel.
+            prefix = bundle_name.rstrip("0123456789")
+            n = 1
+            while f"{prefix}{n}" in taken:
+                n += 1
+            bundle_name = f"{prefix}{n}"
+        else:
+            while bundle_and_member_names(peer_index)[0] in taken:
+                peer_index += 1
+            bundle_name, generated = bundle_and_member_names(peer_index)
+            member_names = member_names or generated
+    if member_names is None:
+        member_names = bundle_and_member_names(peer_index)[1]
 
     bundle = InterfaceBundle(router_id=router.id, peering_id=peering_id, name=bundle_name, status=BundleStatus.UP)
     db.add(bundle)
@@ -86,12 +107,34 @@ def ensure_bundles_for_peering(
                 router_id=router.id,
                 bundle_id=bundle.id,
                 name=member_name,
-                bandwidth_mbps=MEMBER_BANDWIDTH_MBPS,
+                bandwidth_mbps=member_bandwidth_mbps,
                 isis_adjacency_up=True,
             )
         )
     db.flush()
     return bundle
+
+
+def sync_bundle_members(db: Session, bundle: InterfaceBundle, member_names: list[str], bandwidth_mbps: int) -> None:
+    """Makes an existing bundle's members exactly `member_names` - so a
+    re-imported corridor whose port mapping changed doesn't leave stale
+    members behind (or miss new ones)."""
+    existing = {m.name: m for m in db.query(Interface).filter(Interface.bundle_id == bundle.id)}
+    for name, iface in existing.items():
+        if name not in member_names:
+            db.delete(iface)
+        else:
+            iface.bandwidth_mbps = bandwidth_mbps
+    for name in member_names:
+        if name not in existing:
+            db.add(
+                Interface(
+                    router_id=bundle.router_id, bundle_id=bundle.id, name=name,
+                    bandwidth_mbps=bandwidth_mbps, isis_adjacency_up=True,
+                )
+            )
+    db.flush()
+    db.refresh(bundle)
 
 
 def recompute_bundle_status(bundle: InterfaceBundle) -> BundleStatus:

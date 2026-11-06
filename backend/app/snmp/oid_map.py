@@ -63,6 +63,14 @@ FIBER_CUT_CLEAR_OID = "1.3.6.1.4.1.9.9.9999.4.2"
 # repeaters a field crew needs to check.
 FIBER_SEGMENT_OID = "1.3.6.1.4.1.9.9.9999.4.3"
 
+# Normalized optical-element alarm (ONS 15454 / NCS1004 conditions) - see
+# app.snmp.alarm_classes. The condition code (LOS-P, LOS-O, EQPT, ...)
+# rides in CONDITION_OID and the port (e.g. "2/LINE-IN", "0/0/0/0") in
+# IF_NAME_OID. Raise and clear are separate OIDs, like linkDown/linkUp.
+OPTICAL_ALARM_OID = "1.3.6.1.4.1.9.9.9999.5.1"
+OPTICAL_ALARM_CLEAR_OID = "1.3.6.1.4.1.9.9.9999.5.2"
+CONDITION_OID = "1.3.6.1.4.1.9.9.9999.5.3"
+
 TRAP_OID_MAP: dict[str, tuple[str, IncidentType, str]] = {
     LINK_DOWN_OID: ("linkDown", IncidentType.LINK_DOWN, "critical"),
     LINK_UP_OID: ("linkUp", IncidentType.LINK_UP, "info"),
@@ -80,9 +88,14 @@ TRAP_OID_MAP: dict[str, tuple[str, IncidentType, str]] = {
     CISCO_ENV_SUPPLY_OID: ("ciscoEnvMonRedundantSupplyNotification", IncidentType.PSU_FAILURE, "critical"),
     CISCO_CONFIG_MAN_OID: ("ciscoConfigManEvent", IncidentType.CONFIG_CHANGE, "info"),
     CISCO_MEMORY_LOW_OID: ("ciscoMemoryPoolLowMemory", IncidentType.HIGH_MEMORY, "warning"),
-    CISCO_OPTICAL_RX_POWER_OID: ("entSensorThresholdNotification", IncidentType.OPTICAL_ALARM, "warning"),
+    # A generic sensor threshold (temperature/voltage/transceiver power) -
+    # hardware, see app.snmp.alarm_classes.
+    CISCO_OPTICAL_RX_POWER_OID: ("entSensorThresholdNotification", IncidentType.ENV_ALARM, "warning"),
     FIBER_CUT_OID: ("opticalLossOfSignal", IncidentType.OPTICAL_ALARM, "critical"),
     FIBER_CUT_CLEAR_OID: ("opticalSignalRestored", IncidentType.OPTICAL_ALARM, "info"),
+    # Name/type/severity are refined per condition by the classifier.
+    OPTICAL_ALARM_OID: ("opticalAlarm", IncidentType.OPTICAL_ALARM, "warning"),
+    OPTICAL_ALARM_CLEAR_OID: ("opticalAlarmCleared", IncidentType.OPTICAL_ALARM, "info"),
 }
 
 UNKNOWN_TRAP = ("unknownTrap", IncidentType.UNKNOWN, "info")

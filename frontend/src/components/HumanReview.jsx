@@ -10,7 +10,7 @@ import {
   RESOLUTION_REASONS,
 } from "../api.js";
 import { useCurrentUser, useHasRole } from "../auth.js";
-import { FaultLocationNote, StageBadge } from "./IncidentList.jsx";
+import { FaultLocationNote, StageBadge, impactLabel } from "./IncidentList.jsx";
 
 const KIND_LABEL = { maintenance: "Maintenance", soc: "SOC" };
 
@@ -47,9 +47,7 @@ function ImpactLine({ impact }) {
   return (
     <div style={{ color: outage ? "#f87171" : "#facc15" }}>
       {outage ? "⛔" : "⚠"}{" "}
-      {impact.customers_down > 0
-        ? `${impact.customers_down}/${impact.customer_count} customers down`
-        : `${impact.customer_count} customer${impact.customer_count === 1 ? "" : "s"} at risk`}
+      {impactLabel(impact)}
     </div>
   );
 }

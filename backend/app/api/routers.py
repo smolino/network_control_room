@@ -3,16 +3,19 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.bgp import delete_peering
 from app.bundles import isis_net
+from app.corridors import corridors_using_device
 from app.config import settings
 from app.auth import require_admin
 from app.db import get_db
 from app.models import (
     BgpPeering,
+    Card,
+    ElementRole,
     Incident,
     IncidentNotification,
-    Interface,
-    InterfaceBundle,
+    Port,
     RemediationAction,
     Router,
     RouterConfigBackup,
@@ -39,7 +42,8 @@ def _to_router_out(r: Router, attention_ids: set[int], cleared_ids: set[int] = f
     out = RouterOut.model_validate(r)
     out.needs_attention = r.id in attention_ids
     out.device_cleared = r.id in cleared_ids
-    out.isis_net = isis_net(r) if r.router_type == RouterType.PRIMARY else None
+    is_router = r.element_role in (None, ElementRole.ROUTER)
+    out.isis_net = isis_net(r) if r.router_type == RouterType.PRIMARY and is_router else None
     return out
 
 
@@ -72,6 +76,14 @@ def delete_router(router_id: int, db: Session = Depends(get_db)):
     obj = db.query(Router).filter(Router.id == router_id).first()
     if obj is None:
         raise HTTPException(status_code=404, detail="Router not found")
+    # A span or circuit can't lose one of its ends - the corridor has to go
+    # (or be re-imported without this device) first.
+    used_by = corridors_using_device(db, router_id)
+    if used_by:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{obj.hostname} is part of optical corridor(s) {', '.join(used_by)} - delete or re-import the corridor first",
+        )
 
     incident_ids = [row[0] for row in db.query(Incident.id).filter(Incident.router_id == router_id).all()]
 
@@ -101,17 +113,11 @@ def delete_router(router_id: int, db: Session = Depends(get_db)):
     peering_ids = [p.id for p in peerings]
     for peering in peerings:
         # A still-open L1 incident on the *other* router of this peering
-        # can point at it too (see Incident.peering_id) - detach rather
-        # than delete, that incident's own history isn't this router's.
-        db.query(Incident).filter(Incident.peering_id == peering.id).update(
-            {"peering_id": None}, synchronize_session=False
-        )
-        bundle_ids = [
-            row[0] for row in db.query(InterfaceBundle.id).filter(InterfaceBundle.peering_id == peering.id).all()
-        ]
-        db.query(Interface).filter(Interface.bundle_id.in_(bundle_ids)).delete(synchronize_session=False)
-        db.query(InterfaceBundle).filter(InterfaceBundle.peering_id == peering.id).delete(synchronize_session=False)
-        db.delete(peering)
+        # can point at it too (see Incident.peering_id) - delete_peering
+        # detaches rather than deletes it, that history isn't this router's.
+        delete_peering(db, peering)
+    db.query(Port).filter(Port.device_id == router_id).delete(synchronize_session=False)
+    db.query(Card).filter(Card.device_id == router_id).delete(synchronize_session=False)
 
     db.delete(obj)
     db.commit()

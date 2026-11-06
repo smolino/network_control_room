@@ -43,6 +43,22 @@ const PRIORITY_RANK = { P1: 1, P2: 2, P3: 3, P4: 4 };
 
 const IMPACT_COLOR = { outage: "#f87171", degraded: "#facc15" };
 
+// A corridor root cause (see backend/app/rca.py) takes whole circuits and L3
+// links down - that comes first, customers (if any are behind those
+// routers) after.
+export function impactLabel(impact) {
+  const customers =
+    impact.customers_down > 0
+      ? `${impact.customers_down}/${impact.customer_count} customers down`
+      : `${impact.customer_count} customer${impact.customer_count === 1 ? "" : "s"} at risk`;
+  if (!impact.links_down && !impact.circuits_down) return customers;
+  const parts = [];
+  if (impact.links_down) parts.push(`${impact.links_down} L3 link${impact.links_down === 1 ? "" : "s"} down`);
+  if (impact.circuits_down) parts.push(`${impact.circuits_down} circuit${impact.circuits_down === 1 ? "" : "s"}`);
+  if (impact.customer_count) parts.push(customers);
+  return parts.join(" · ");
+}
+
 // Open, service-affecting incidents only (see backend/app/impact.py) -
 // everything else has no blast radius. Sort key: customers actually down
 // first, then everyone merely degraded.
@@ -54,10 +70,7 @@ function impactScore(incident) {
 function ImpactCell({ incident, onShowImpact }) {
   const impact = incident.impact;
   if (!impact) return <span style={{ color: "#5b6479" }}>—</span>;
-  const label =
-    impact.customers_down > 0
-      ? `${impact.customers_down}/${impact.customer_count} customers down`
-      : `${impact.customer_count} customer${impact.customer_count === 1 ? "" : "s"} at risk`;
+  const label = impactLabel(impact);
   return (
     <div>
       <span
@@ -91,8 +104,26 @@ export function FaultLocationNote({ location, onLocate }) {
   const { start, end } = location;
   return (
     <div style={{ fontSize: "0.74rem", color: "#fb923c", marginTop: "0.25rem" }}>
-      📍 Faulty span <strong>{start.label} → {end.label}</strong> (span {location.segment_index + 1} of{" "}
-      {location.segment_count}, km {start.km_from_a}–{end.km_from_a} of {location.distance_km})
+      {location.corridor_id && location.element ? (
+        // A corridor root cause on one element (amplifier, transponder, ...).
+        <>
+          📍 {location.diagnosis} at <strong>{start.label}</strong> ({start.site}, km {start.km_from_a} of{" "}
+          {location.distance_km} on {location.corridor})
+        </>
+      ) : location.corridor_id ? (
+        // A corridor root cause on a span of rented fiber.
+        <>
+          📍 {location.diagnosis} on span <strong>{location.segment_index + 1}</strong> of {location.segment_count}:{" "}
+          <strong>{start.label} → {end.label}</strong> ({location.provider || "provider unknown"}
+          {location.a_end || location.b_end ? ` ${location.a_end || "?"}–${location.b_end || "?"}` : ""}, km{" "}
+          {start.km_from_a}–{end.km_from_a} of {location.distance_km} on {location.corridor})
+        </>
+      ) : (
+        <>
+          📍 Faulty span <strong>{start.label} → {end.label}</strong> (span {location.segment_index + 1} of{" "}
+          {location.segment_count}, km {start.km_from_a}–{end.km_from_a} of {location.distance_km})
+        </>
+      )}
       {location.repeaters_to_check.length > 0 && <> · check {location.repeaters_to_check.join(" & ")}</>}
       {onLocate && (
         <>
@@ -185,6 +216,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter, onSho
   const [stageFilter, setStageFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [layerFilter, setLayerFilter] = useState("all");
+  const [classFilter, setClassFilter] = useState("all");
   // Symptomatic incidents (root_cause_incident_id set) are the L3 fallout
   // of an open L1 fiber fault - hidden by default so the list surfaces the
   // root cause instead of a wall of correlated noise, per the design doc's
@@ -202,6 +234,7 @@ export default function IncidentList({ incidents, routers, onSelectRouter, onSho
     if (statusFilter !== "all" && i.status !== statusFilter) return false;
     if (stageFilter !== "all" && i.stage !== stageFilter) return false;
     if (layerFilter !== "all" && i.layer !== layerFilter) return false;
+    if (classFilter !== "all" && i.alarm_class !== classFilter) return false;
     if (hideSymptomatic && i.root_cause_incident_id != null) return false;
     return typeFilter === "all" || i.incident_type === typeFilter;
   });
@@ -236,6 +269,13 @@ export default function IncidentList({ incidents, routers, onSelectRouter, onSho
           <option value="all">All layers</option>
           <option value="L1">L1 (physical)</option>
           <option value="L3">L3 (logical)</option>
+        </select>
+        <select value={classFilter} onChange={(e) => setClassFilter(e.target.value)}>
+          <option value="all">All alarm classes</option>
+          <option value="transport">Transport (fiber/optical path)</option>
+          <option value="logical">Logical (link, IS-IS, BGP)</option>
+          <option value="equipment">Equipment (hardware/environment)</option>
+          <option value="management">Management</option>
         </select>
         <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer" }}>
           <input
@@ -278,7 +318,14 @@ export default function IncidentList({ incidents, routers, onSelectRouter, onSho
                   <td>
                     <span className={`badge ${i.layer === "L1" ? "down" : "unknown"}`}>{i.layer}</span>
                   </td>
-                  <td>{i.incident_type}</td>
+                  <td>
+                    {i.incident_type}
+                    {(i.condition || i.alarm_class) && (
+                      <div style={{ fontSize: "0.7rem", color: "#9aa4bf", marginTop: "0.15rem" }}>
+                        {[i.condition, i.alarm_class].filter(Boolean).join(" · ")}
+                      </div>
+                    )}
+                  </td>
                   <td>
                     <span className="link" onClick={() => onSelectRouter(i.router_id)}>
                       {routerById[i.router_id]?.hostname || `#${i.router_id}`}

@@ -38,3 +38,10 @@ INTERFACES = [
     "FortyGigE0/0/1",
     "Loopback0",
 ]
+
+# Normalized optical-element alarm (ONS 15454 / NCS1004 condition codes such
+# as LOS-P, LOS-O, EQPT) - see backend/app/snmp/alarm_classes.py. The code
+# rides in CONDITION_OID, the port in IF_NAME_OID.
+OPTICAL_ALARM_OID = "1.3.6.1.4.1.9.9.9999.5.1"
+OPTICAL_ALARM_CLEAR_OID = "1.3.6.1.4.1.9.9.9999.5.2"
+CONDITION_OID = "1.3.6.1.4.1.9.9.9999.5.3"

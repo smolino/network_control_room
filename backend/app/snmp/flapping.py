@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.incidents import service as incident_service
-from app.models import Incident, IncidentType, Router, RouterStatus, TrapEvent
+from app.models import Incident, IncidentType, Interface, Router, RouterStatus, TrapEvent
 from app.snmp.oid_map import ISIS_ADJACENCY_DOWN_OID, LINK_DOWN_OID, LINK_UP_OID
 
 # A flap is detected on whichever transition crosses the threshold - often
@@ -32,9 +32,17 @@ def evaluate_link_event(
     # Includes the event currently being processed (flushed just before
     # this call, not yet committed).
     is_flapping = recent_count >= settings.flap_transition_threshold
+    # A bundle member going down is redundancy at work, not the router
+    # going down - the bundle/peering rollup (app.bundles, driven by the
+    # member's IS-IS adjacency) says what that costs. Only a router's own
+    # unprotected links (customer-facing ports) change its status.
+    is_bundle_member = interface_name is not None and (
+        db.query(Interface.id).filter(Interface.router_id == router.id, Interface.name == interface_name).first() is not None
+    )
 
     if is_flapping:
-        router.status = RouterStatus.FLAPPING
+        if not is_bundle_member:
+            router.status = RouterStatus.FLAPPING
         incident, _ = incident_service.open_or_bump(
             db,
             router,
@@ -47,7 +55,8 @@ def evaluate_link_event(
         return incident
 
     if trap_oid == LINK_DOWN_OID:
-        router.status = RouterStatus.DOWN
+        if not is_bundle_member:
+            router.status = RouterStatus.DOWN
         incident, _ = incident_service.open_or_bump(
             db,
             router,

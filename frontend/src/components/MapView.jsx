@@ -64,6 +64,12 @@ const MARKER_STROKE = "#0b0f1a";
 // L1 repeater dots - purple so they stand out from the routers and links.
 const REPEATER_FILL = "#a855f7";
 const REPEATER_STROKE = "#581c87";
+// Modelled optical corridor (dark fiber through real amplifier sites, see
+// backend/app/corridors.py) - same purple family as the repeater dots.
+const FIBER_COLOR = "#a855f7";
+// A fiber span the root-cause engine found cut - red like anything down,
+// and the most prominent thing on the map while it lasts.
+const FIBER_CUT_COLOR = "#ef4444";
 const ALERT_STROKE = "#f97316";
 // A router whose device reported the problem gone (e.g. linkUp) while its
 // incident is still open for an engineer to confirm: up again, but not
@@ -142,8 +148,43 @@ function repeaterPositions(a, b, count) {
   return points;
 }
 
+// Optical network elements (backend models.ElementRole) - L1 only, no
+// IS-IS/BGP. A missing role means a router.
+const ROLE_LABEL = {
+  transponder: "Transponder (L1)",
+  terminal: "DWDM terminal (L1)",
+  ila: "In-line amplifier (L1)",
+};
+const isOptical = (r) => Boolean(r.element_role) && r.element_role !== "router";
+
+// Devices sharing exact coordinates (a POP's routers, transponder and
+// terminal) are fanned out a little so each marker stays clickable when
+// zoomed in. Lines still use the true coordinates.
+const FAN_OUT_DEGREES = 0.012;
+function fannedPositions(routers) {
+  const groups = new Map();
+  for (const r of routers) {
+    const key = `${r.latitude},${r.longitude}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  const out = {};
+  for (const group of groups.values()) {
+    group.forEach((r, i) => {
+      if (group.length === 1) {
+        out[r.id] = [r.latitude, r.longitude];
+        return;
+      }
+      const angle = (2 * Math.PI * i) / group.length;
+      out[r.id] = [r.latitude + FAN_OUT_DEGREES * Math.sin(angle), r.longitude + FAN_OUT_DEGREES * Math.cos(angle)];
+    });
+  }
+  return out;
+}
+
 function RouterMarker({
   r,
+  center,
   radius,
   fillOpacity,
   blinkOn,
@@ -167,7 +208,7 @@ function RouterMarker({
   const recovered = r.device_cleared && r.status === "up";
   return (
     <CircleMarker
-      center={[r.latitude, r.longitude]}
+      center={center || [r.latitude, r.longitude]}
       radius={r.status === "flapping" || alerting || linkSelected ? radius + 3 : radius}
       eventHandlers={linkMode ? { click: () => onLinkClick?.(r) } : undefined}
       pathOptions={{
@@ -177,7 +218,9 @@ function RouterMarker({
             ? ALERT_STROKE
             : showSymptomaticRing
               ? SYMPTOMATIC_STROKE
-              : MARKER_STROKE,
+              : isOptical(r)
+                ? REPEATER_STROKE
+                : MARKER_STROKE,
         weight: linkSelected ? 3 : alerting ? 3 : showSymptomaticRing ? 2 : 1.25,
         dashArray: showSymptomaticRing && !linkSelected ? "3 3" : undefined,
         fillColor: recovered ? RECOVERED_COLOR : statusColor[r.status] || statusColor.unknown,
@@ -194,7 +237,13 @@ function RouterMarker({
             <div>{r.site_name} — {r.city}, {r.country}</div>
             <div>{r.mgmt_ip} · {r.model}</div>
             {r.asn && <div>AS{r.asn}</div>}
-            <div>{r.router_type === "primary" ? "Primary (backbone)" : "Customer CPE"}</div>
+            <div>
+              {isOptical(r)
+                ? ROLE_LABEL[r.element_role] || r.element_role
+                : r.router_type === "primary"
+                  ? "Primary (backbone)"
+                  : "Customer CPE"}
+            </div>
             {parentHostname && <div>Uplink to: {parentHostname}</div>}
             <div>
               status: <span className={`badge ${r.status}`}>{r.status}</span>
@@ -287,6 +336,7 @@ function FitToRouters({ highlightKey, points, maxZoom = 7 }) {
 export default function MapView({
   routers,
   peerings = [],
+  corridors = [],
   onSelectRouter,
   onFleetChanged,
   impactHighlight = null,
@@ -331,19 +381,44 @@ export default function MapView({
   const svgRenderer = useMemo(() => L.svg(), []);
 
   const primaries = useMemo(() => routers.filter((r) => r.router_type !== "customer"), [routers]);
+  // L3 routers vs optical elements: the latter are drawn on the L1 layer.
+  const l3Primaries = useMemo(() => primaries.filter((r) => !isOptical(r)), [primaries]);
+  const opticalElements = useMemo(() => primaries.filter(isOptical), [primaries]);
+  const markerPositions = useMemo(() => fannedPositions(primaries), [primaries]);
   const customers = useMemo(() => routers.filter((r) => r.router_type === "customer"), [routers]);
   // Peerings with a currently-open L1 (fiber) incident - drives both the
   // pulsing fault-segment line and the affected endpoint routers' dashed
   // "symptomatic" ring (see app.correlation on the backend).
   const openL1Peerings = useMemo(() => peerings.filter((p) => p.open_l1_incident_id), [peerings]);
+  // Open root causes on modelled corridors (see backend/app/rca.py).
+  const corridorFaults = useMemo(
+    () => corridors.flatMap((c) => (c.faults || []).map((f) => ({ ...f, corridor: c }))),
+    [corridors]
+  );
+  const corridorFaultByPeering = useMemo(() => {
+    const out = {};
+    for (const f of corridorFaults) for (const id of f.peering_ids) out[id] = f;
+    return out;
+  }, [corridorFaults]);
+  // Both elements at the ends of a cut span - the two sites a field crew
+  // works between.
+  const cutSpanEnds = useMemo(
+    () =>
+      corridorFaults.flatMap((f) => {
+        const span = f.kind.endsWith("-CUT") && f.corridor.spans.find((s) => s.seq === f.span_seq);
+        return span ? [span.from_device_id, span.to_device_id].map((id) => ({ id, fault: f })) : [];
+      }),
+    [corridorFaults]
+  );
   const symptomaticRouterIds = useMemo(() => {
     const ids = new Set();
     for (const p of openL1Peerings) {
       ids.add(p.router_a_id);
       ids.add(p.router_b_id);
     }
+    for (const f of corridorFaults) for (const id of f.router_ids) ids.add(id);
     return ids;
-  }, [openL1Peerings]);
+  }, [openL1Peerings, corridorFaults]);
 
   // Gates the blink interval below - covers the existing "incident in triage"
   // case, a customer CPE's own down/flapping status (see connectionIssue in
@@ -353,10 +428,11 @@ export default function MapView({
   const anyBlinking = useMemo(
     () =>
       openL1Peerings.length > 0 ||
+      corridorFaults.length > 0 ||
       routers.some(
         (r) => r.needs_attention || (r.router_type === "customer" && (r.status === "down" || r.status === "flapping"))
       ),
-    [routers, openL1Peerings]
+    [routers, openL1Peerings, corridorFaults]
   );
 
   // Down peerings that currently have an alternate path through the mesh -
@@ -373,8 +449,10 @@ export default function MapView({
   );
 
   const totalRepeaters = useMemo(
-    () => peerings.reduce((sum, p) => sum + (p.repeater_count || 0), 0),
-    [peerings]
+    () =>
+      peerings.reduce((sum, p) => sum + (p.corridor_id ? 0 : p.repeater_count || 0), 0) +
+      corridors.reduce((sum, c) => sum + c.route.filter((pt) => pt.kind === "ila").length, 0),
+    [peerings, corridors]
   );
 
   const impactRouters = useMemo(
@@ -678,9 +756,37 @@ export default function MapView({
           }}
         >
           <div style={{ fontWeight: 600, color: ALERT_STROKE }}>
-            Faulty span {faultHighlight.start.label} → {faultHighlight.end.label} (incident #{faultHighlight.incidentId}
+            {faultHighlight.corridor_id
+              ? `${faultHighlight.diagnosis} ${faultHighlight.element ? `at ${faultHighlight.start.label}` : `on span ${faultHighlight.segment_index + 1}`}`
+              : `Faulty span ${faultHighlight.start.label} → ${faultHighlight.end.label}`}{" "}
+            (incident #{faultHighlight.incidentId}
             {faultHighlight.status === "resolved" ? ", resolved" : ""})
           </div>
+          {faultHighlight.corridor_id ? (
+            <div style={{ color: "#9aa4bf", margin: "0.25rem 0 0.4rem", lineHeight: 1.45 }}>
+              {faultHighlight.corridor}: {faultHighlight.router_a} ↔ {faultHighlight.router_b},{" "}
+              {faultHighlight.distance_km} km
+              {!faultHighlight.element && (
+                <div>
+                  Span {faultHighlight.segment_index + 1} of {faultHighlight.segment_count} ·{" "}
+                  {faultHighlight.segment_length_km} km · {faultHighlight.provider || "provider unknown"}
+                  {faultHighlight.a_end || faultHighlight.b_end
+                    ? ` (ends ${faultHighlight.a_end || "?"}–${faultHighlight.b_end || "?"})`
+                    : ""}
+                  {faultHighlight.provider_circuit_id ? ` · circuit ${faultHighlight.provider_circuit_id}` : ""}
+                </div>
+              )}
+              {(faultHighlight.element ? [faultHighlight.start] : [faultHighlight.start, faultHighlight.end]).map((pt) => (
+                <div key={pt.label}>
+                  <strong style={{ color: "#e6e9f0" }}>{pt.label}</strong> · {pt.site} · km {pt.km_from_a} ·{" "}
+                  {pt.latitude}, {pt.longitude}
+                </div>
+              ))}
+              {faultHighlight.element
+                ? "Dispatch to this site - see the incident's analysis for what to replace."
+                : "Fiber fault between these two sites: open a ticket with the provider and ask for an OTDR trace."}
+            </div>
+          ) : (
           <div style={{ color: "#9aa4bf", margin: "0.25rem 0 0.4rem", lineHeight: 1.45 }}>
             {faultHighlight.router_a} ↔ {faultHighlight.router_b}, span {faultHighlight.segment_index + 1} of{" "}
             {faultHighlight.segment_count} ({faultHighlight.segment_length_km} km)
@@ -694,6 +800,7 @@ export default function MapView({
               ? `Inspect ${faultHighlight.repeaters_to_check.join(" & ")}, replace the one that fails; otherwise OTDR the span.`
               : "No repeater on this span - check the router-end optics, then OTDR the span."}
           </div>
+          )}
           <button type="button" onClick={onClearFault}>
             Clear
           </button>
@@ -749,21 +856,39 @@ export default function MapView({
               [a.latitude, a.longitude],
               [b.latitude, b.longitude],
             ]);
+            // Down because of a corridor root cause (a cut span, a failed
+            // amplifier): drawn as its consequence - thin and dashed - so the
+            // eye goes to the faulty span, not to this straight L3 line.
+            const causedBy = down ? corridorFaultByPeering[p.id] : null;
             const lines =
               showL3 && showBgpLinks
                 ? worldCopies(positions).map((pos, i) => (
                     <Polyline
-                      key={`${p.id}-${i}`}
+                      key={`${p.id}-${i}${causedBy ? "-symptom" : ""}`}
                       positions={pos}
-                      pathOptions={{
-                        color: BGP_COLOR[p.status] || BGP_COLOR.established,
-                        weight: down ? 2.5 : 1.5,
-                        opacity: down ? 0.9 : 0.6,
-                      }}
-                    />
+                      pathOptions={
+                        causedBy
+                          ? { color: BGP_COLOR.down, weight: 1.5, opacity: 0.7, dashArray: "6 6" }
+                          : {
+                              color: BGP_COLOR[p.status] || BGP_COLOR.established,
+                              weight: down ? 2.5 : 1.5,
+                              opacity: down ? 0.9 : 0.6,
+                            }
+                      }
+                    >
+                      {causedBy && (
+                        <Tooltip sticky>
+                          {a.hostname} ↔ {b.hostname} (L3) down because of incident #{causedBy.incident_id}:{" "}
+                          {causedBy.kind}
+                          {causedBy.span_seq ? ` on span ${causedBy.span_seq}` : ""}
+                        </Tooltip>
+                      )}
+                    </Polyline>
                   ))
                 : [];
-            const reps = repeaterPositions(positions[0], positions[1], p.repeater_count || 0);
+            // A corridor link's physical path is drawn from its corridor
+            // (below), through the real amplifier sites - no stand-in dots.
+            const reps = p.corridor_id ? [] : repeaterPositions(positions[0], positions[1], p.repeater_count || 0);
             // Named R1..Rn from router_a, matching backend/app/fault_location.py,
             // so a field crew can match the dot to the alarm's span.
             const kmAt = (k) => (((p.distance_km || 0) * k) / ((p.repeater_count || 0) + 1)).toFixed(1);
@@ -800,7 +925,7 @@ export default function MapView({
             // still-open OPTICAL_ALARM incident (not just the cosmetic
             // overlay) - pulse it via the same blink timer as needs_attention
             // routers so it visually reads as "root cause, actively faulted".
-            const fault = p.active_fault_segment;
+            const fault = p.corridor_id ? null : p.active_fault_segment;
             const hasOpenL1Incident = Boolean(p.open_l1_incident_id);
             const runPoints = [positions[0], ...reps, positions[1]];
             const pointLabel = (k) => (k === 0 ? a.hostname : k === runPoints.length - 1 ? b.hostname : `R${k}`);
@@ -826,6 +951,101 @@ export default function MapView({
                 : [];
             return [...lines, ...repeaters, ...faultLine];
           })}
+
+        {showL1 &&
+          corridors.flatMap((c) =>
+            c.route.slice(1).flatMap((pt, i) => {
+              const prev = c.route[i];
+              const span = c.spans[i];
+              const positions = unwrapPositions([
+                [prev.latitude, prev.longitude],
+                [pt.latitude, pt.longitude],
+              ]);
+              // A cable/fiber cut the root-cause engine located on this span.
+              const fault = span && (c.faults || []).find((f) => f.span_seq === span.seq && f.kind.endsWith("-CUT"));
+              return worldCopies(positions).map((pos, ci) => (
+                <Polyline
+                  key={`corridor-${c.id}-${i}-${ci}${fault ? "-fault" : ""}`}
+                  positions={pos}
+                  pathOptions={
+                    fault
+                      ? { color: FIBER_CUT_COLOR, weight: blinkOn ? 8 : 6, opacity: blinkOn ? 1 : 0.6 }
+                      : { color: FIBER_COLOR, weight: 2.5, opacity: 0.75 }
+                  }
+                >
+                  <Tooltip sticky>
+                    {fault && (
+                      <div style={{ color: FIBER_CUT_COLOR, fontWeight: 600, maxWidth: 360, whiteSpace: "normal" }}>
+                        {fault.kind} · incident #{fault.incident_id} {fault.priority ? `(${fault.priority})` : ""}
+                        <br />
+                        {fault.summary}
+                      </div>
+                    )}
+                    {c.name} · span {span ? span.seq : i + 1}: {prev.name} → {pt.name}
+                    {span && (
+                      <>
+                        <br />
+                        {span.provider || "unknown provider"} ({span.a_end || "?"}–{span.b_end || "?"}) ·{" "}
+                        {span.length_km != null ? `${span.length_km} km` : "length unknown"} · km {span.km_from_a}–
+                        {span.length_km != null ? (span.km_from_a + span.length_km).toFixed(1) : "?"} from {c.site_a}
+                      </>
+                    )}
+                  </Tooltip>
+                </Polyline>
+              ));
+            })
+          )}
+
+        {showL1 &&
+          cutSpanEnds
+            .filter(({ id }) => markerPositions[id])
+            .map(({ id, fault }) => (
+              <CircleMarker
+                key={`cut-end-${fault.incident_id}-${id}`}
+                center={markerPositions[id]}
+                radius={blinkOn ? 12 : 10}
+                pathOptions={{ color: FIBER_CUT_COLOR, weight: 3, fill: false, opacity: blinkOn ? 1 : 0.6 }}
+              >
+                <Tooltip>
+                  {routerById[id]?.hostname} · {routerById[id]?.site_name}
+                  <br />
+                  end of span {fault.span_seq} - {fault.kind} (incident #{fault.incident_id})
+                </Tooltip>
+              </CircleMarker>
+            ))}
+
+        {showL1 &&
+          corridorFaults
+            .filter((f) => !f.kind.endsWith("-CUT") && markerPositions[f.device_id])
+            .map((f) => (
+              <CircleMarker
+                key={`corridor-fault-${f.incident_id}`}
+                center={markerPositions[f.device_id]}
+                radius={blinkOn ? 14 : 11}
+                pathOptions={{ color: ALERT_STROKE, weight: 3, fill: false, opacity: blinkOn ? 1 : 0.5 }}
+              >
+                <Tooltip>
+                  <div style={{ color: ALERT_STROKE, fontWeight: 600, maxWidth: 360, whiteSpace: "normal" }}>
+                    {f.kind} · incident #{f.incident_id} {f.priority ? `(${f.priority})` : ""}
+                  </div>
+                  {f.summary}
+                </Tooltip>
+              </CircleMarker>
+            ))}
+
+        {showL1 &&
+          opticalElements.map((r) => (
+            <RouterMarker
+              key={r.id}
+              r={r}
+              center={markerPositions[r.id]}
+              radius={5}
+              fillOpacity={0.95}
+              blinkOn={blinkOn}
+              onSelectRouter={onSelectRouter}
+              symptomatic={symptomaticRouterIds.has(r.id)}
+            />
+          ))}
 
         {showReroutes &&
           showL3 &&
@@ -869,10 +1089,11 @@ export default function MapView({
           ))}
 
         {showL3 &&
-          primaries.map((r) => (
+          l3Primaries.map((r) => (
             <RouterMarker
               key={r.id}
               r={r}
+              center={markerPositions[r.id]}
               radius={6.5}
               fillOpacity={0.95}
               blinkOn={blinkOn}
@@ -911,9 +1132,9 @@ export default function MapView({
               interactive={false}
               pathOptions={{ color: ALERT_STROKE, weight: 7, opacity: 0.35 }}
             />
-            {[faultHighlight.start, faultHighlight.end].map((pt) => (
+            {(faultHighlight.element ? [faultHighlight.start] : [faultHighlight.start, faultHighlight.end]).map((pt, i) => (
               <CircleMarker
-                key={`fault-point-${pt.label}`}
+                key={`fault-point-${i}-${pt.label}`}
                 center={[pt.latitude, pt.longitude]}
                 radius={pt.kind === "repeater" ? 7 : 10}
                 pathOptions={{ color: ALERT_STROKE, weight: 3, fill: pt.kind === "repeater", fillColor: REPEATER_FILL, fillOpacity: 1 }}

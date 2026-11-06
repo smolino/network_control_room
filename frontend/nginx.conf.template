@@ -1,0 +1,48 @@
+# Plain HTTP only: serves the built app and proxies /api and /ws to the
+# backend. TLS is terminated by an external nginx, not part of this project.
+#
+# A template: the nginx image's entrypoint fills in ${...} from the
+# environment at startup (see the Dockerfile) and leaves nginx's own
+# $variables alone.
+#
+# The backend is looked up through `resolver` on every request (cached for
+# 10s) instead of once at startup: a recreated backend container comes back
+# with a new IP, and a startup-time lookup would keep proxying to the old
+# one - every /api and /ws request failing with 502 until the frontend was
+# restarted too. NGINX_LOCAL_RESOLVERS is the container's own DNS server;
+# nginx's resolver doesn't use resolv.conf search domains, so on Kubernetes
+# BACKEND_UPSTREAM must be the Service's full name (see k8s/10-frontend.yaml).
+resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+
+server {
+    listen 80;
+    server_name _;
+
+    set $backend_upstream ${BACKEND_UPSTREAM};
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location /api/ {
+        # Add Fleet bulk uploads post a whole CSV (up to ~4000 routers) in
+        # one request - well past nginx's 1m / 60s defaults.
+        client_max_body_size 10m;
+        proxy_read_timeout 300s;
+        proxy_pass $backend_upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location /ws/ {
+        proxy_pass $backend_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 3600s;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

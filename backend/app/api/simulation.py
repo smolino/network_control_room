@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -9,16 +9,26 @@ from app.auth import require_admin
 from app.config import settings
 from app.db import SessionLocal, get_db
 from app.incidents.service import AUTO_HEAL, auto_heal_enabled
+from app.snmp.alarm_classes import FILTERABLE, filtered_classes, set_filtered_classes
 from app.models import (
+    AlarmClass,
     AppSetting,
     BgpPeering,
+    Card,
+    ClientCircuit,
+    Corridor,
+    FiberSpan,
     Incident,
     IncidentNotification,
     Interface,
     InterfaceBundle,
+    OpticalPath,
+    PathHop,
+    Port,
     RemediationAction,
     Router,
     RouterConfigBackup,
+    Site,
     TrapEvent,
 )
 from app.topology_graph import clear_topology
@@ -61,6 +71,13 @@ class SimulationStatusOut(SimulationStatus):
     # Off: no playbooks and no automatic resolution - see
     # app.incidents.service.auto_heal_enabled.
     auto_heal: bool = True
+    # Alarm classes kept as history only, never opening an incident - see
+    # app.snmp.alarm_classes.
+    filtered_alarm_classes: list[AlarmClass] = []
+
+
+class AlarmFilter(BaseModel):
+    classes: list[AlarmClass]
 
 
 class SimulationRates(BaseModel):
@@ -113,6 +130,7 @@ def _status(db: Session) -> SimulationStatusOut:
         l3_rate=_rate(db, L3_RATE),
         l1_base_per_hour=3600 / mean_interval if settings.fiber_fault_simulation and mean_interval > 0 else 0.0,
         auto_heal=auto_heal_enabled(db),
+        filtered_alarm_classes=sorted(filtered_classes(db), key=lambda c: c.value),
     )
 
 
@@ -151,6 +169,19 @@ def set_auto_heal(payload: AutoHeal, db: Session = Depends(get_db)):
     return _status(db)
 
 
+@router.post("/alarm-filter", response_model=SimulationStatusOut, dependencies=[Depends(require_admin)])
+def set_alarm_filter(payload: AlarmFilter, db: Session = Depends(get_db)):
+    """Which alarm classes stop opening incidents (equipment and/or
+    management; transport and logical alarms can't be filtered). Applies to
+    new traps; open incidents of a filtered class leave the review queue."""
+    unfilterable = [c.value for c in payload.classes if c not in FILTERABLE]
+    if unfilterable:
+        raise HTTPException(status_code=422, detail=f"can't filter {', '.join(unfilterable)} alarms")
+    set_filtered_classes(db, payload.classes)
+    db.commit()
+    return _status(db)
+
+
 # Children before parents - none of these FKs cascade at the DB level.
 _FLEET_MODELS = [
     Interface,
@@ -160,8 +191,16 @@ _FLEET_MODELS = [
     RouterConfigBackup,
     TrapEvent,
     Incident,
+    PathHop,
+    OpticalPath,
+    ClientCircuit,
+    FiberSpan,
+    Port,
+    Card,
     BgpPeering,
+    Corridor,
     Router,
+    Site,
 ]
 
 

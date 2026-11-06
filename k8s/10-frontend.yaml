@@ -18,6 +18,11 @@ spec:
       containers:
         - name: frontend
           image: docker.io/mescalo/network-control-room-frontend:latest
+          env:
+            # nginx's own resolver ignores resolv.conf search domains, so
+            # the backend Service needs its full name here.
+            - name: BACKEND_UPSTREAM
+              value: http://backend.ncr.svc.cluster.local:8000
           ports:
             - containerPort: 80
           readinessProbe:

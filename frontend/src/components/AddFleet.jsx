@@ -1,8 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createRouterModel, fetchRouterModels, geocodeCity, seedBgpPeerings, seedRouters, updateRouterModel } from "../api.js";
+import {
+  createRouterModel,
+  fetchBgpPeerings,
+  fetchCorridorSpec,
+  fetchCorridors,
+  fetchRouterModels,
+  geocodeCity,
+  importCorridor,
+  seedBgpPeerings,
+  seedRouters,
+  updateRouterModel,
+  validateCorridor,
+} from "../api.js";
 import { CITIES, CITY_BY_NAME } from "../cities.js";
 import { downloadTextFile, parseCSV, toCSV } from "../csv.js";
 import { haversineKm, REPEATER_SPACING_KM } from "../geo.js";
+import CorridorBuilder from "./CorridorBuilder.jsx";
 
 // Shared by every city <input list="city-options"> below - one datalist
 // serves any number of inputs referencing its id, so it only needs to be
@@ -91,6 +104,9 @@ const ROUTER_TEMPLATE_HEADERS = [
   "city",
   "latitude",
   "longitude",
+  // Optional: transponder | terminal | ila for optical elements, empty for a
+  // router - so an export brings them back as what they are.
+  "element_role",
 ];
 
 const ROUTER_TEMPLATE_ROWS = [
@@ -796,6 +812,7 @@ function BulkUpload({ routers, onFleetChanged }) {
         city: r.city || null,
         latitude: Number(r.latitude),
         longitude: Number(r.longitude),
+        element_role: (r.element_role || "").trim() || null,
       });
       // Primaries first: a customer row's parent_mgmt_ip is resolved to a
       // real router id at seed time, so its parent primary must already be
@@ -860,8 +877,9 @@ function BulkUpload({ routers, onFleetChanged }) {
         <h3>Bulk upload routers (CSV)</h3>
         <p className="settings-hint">
           Columns: router_type (primary/customer), hostname, mgmt_ip, parent_mgmt_ip (customers
-          only), asn, vendor, model, site_name, country, city, latitude, longitude. Primaries are
-          always seeded before customers, regardless of row order in the file.
+          only), asn, vendor, model, site_name, country, city, latitude, longitude, and optionally
+          element_role (transponder, terminal or ila for optical elements; empty for a router).
+          Primaries are always seeded before customers, regardless of row order in the file.
         </p>
         <button
           type="button"
@@ -929,6 +947,194 @@ function BulkUpload({ routers, onFleetChanged }) {
         )}
         <StatusBanner status={peeringStatus} />
       </div>
+
+      <CorridorUpload onFleetChanged={onFleetChanged} />
+      <FleetExport routers={routers} />
+    </div>
+  );
+}
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+// Backs up the whole fleet in the formats this tab uploads: routers (optical
+// elements included, with their element_role), the BGP links/repeaters, and
+// each optical corridor as a JSON spec. Restore in that order.
+function FleetExport({ routers }) {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const exportRouters = () => {
+    const byId = Object.fromEntries(routers.map((r) => [r.id, r]));
+    // Primaries first, like the upload expects (customers reference them).
+    const sorted = [...routers].sort(
+      (a, b) => (a.router_type === "primary" ? 0 : 1) - (b.router_type === "primary" ? 0 : 1) || a.id - b.id
+    );
+    const rows = sorted.map((r) => ({
+      router_type: r.router_type,
+      hostname: r.hostname,
+      mgmt_ip: r.mgmt_ip,
+      parent_mgmt_ip: r.parent_router_id ? byId[r.parent_router_id]?.mgmt_ip ?? "" : "",
+      asn: r.asn ?? "",
+      vendor: r.vendor ?? "",
+      model: r.model ?? "",
+      site_name: r.site_name ?? "",
+      country: r.country ?? "",
+      city: r.city ?? "",
+      latitude: r.latitude,
+      longitude: r.longitude,
+      element_role: r.element_role && r.element_role !== "router" ? r.element_role : "",
+    }));
+    downloadTextFile(`ncr-routers-${today()}.csv`, toCSV(ROUTER_TEMPLATE_HEADERS, rows));
+    const optical = rows.filter((r) => r.element_role).length;
+    setStatus({ type: "success", text: `Exported ${rows.length} device(s) (${optical} optical element(s)).` });
+  };
+
+  const exportLinks = async () => {
+    setBusy(true);
+    try {
+      const byId = Object.fromEntries(routers.map((r) => [r.id, r]));
+      // Links carried by a modelled corridor are restored by the corridor
+      // file (with their real bundle ports), not as abstract links.
+      const peerings = (await fetchBgpPeerings()).filter((p) => !p.corridor_id);
+      const rows = peerings
+        .filter((p) => byId[p.router_a_id] && byId[p.router_b_id])
+        .map((p) => ({
+          router_a_mgmt_ip: byId[p.router_a_id].mgmt_ip,
+          router_b_mgmt_ip: byId[p.router_b_id].mgmt_ip,
+          distance_km: p.distance_km ?? "",
+          repeater_count: p.repeater_count ?? 0,
+        }));
+      downloadTextFile(`ncr-bgp-links-${today()}.csv`, toCSV(PEERING_TEMPLATE_HEADERS, rows));
+      const repeaters = rows.reduce((sum, r) => sum + Number(r.repeater_count || 0), 0);
+      setStatus({ type: "success", text: `Exported ${rows.length} link(s) with ${repeaters} repeater(s).` });
+    } catch (err) {
+      setStatus({ type: "error", text: `Export failed: ${err.message}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const exportCorridors = async () => {
+    setBusy(true);
+    try {
+      const corridors = await fetchCorridors();
+      for (const c of corridors) {
+        const spec = await fetchCorridorSpec(c.id);
+        downloadTextFile(`ncr-corridor-${c.name}-${today()}.json`, JSON.stringify(spec, null, 2), "application/json");
+      }
+      setStatus({
+        type: "success",
+        text: corridors.length ? `Exported ${corridors.length} corridor(s).` : "No optical corridor to export.",
+      });
+    } catch (err) {
+      setStatus({ type: "error", text: `Export failed: ${err.message}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card">
+      <h3>Export / back up the fleet</h3>
+      <p className="settings-hint">
+        Downloads the current fleet in the same formats this tab uploads. To restore, upload in this order:
+        routers, then BGP links, then each corridor.
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", alignItems: "flex-start" }}>
+        <button type="button" onClick={exportRouters} disabled={busy}>
+          Routers &amp; optical elements (CSV)
+        </button>
+        <button type="button" onClick={exportLinks} disabled={busy}>
+          BGP links &amp; repeaters (CSV)
+        </button>
+        <button type="button" onClick={exportCorridors} disabled={busy}>
+          Optical corridors (JSON)
+        </button>
+      </div>
+      <p className="settings-hint" style={{ marginTop: "0.5rem" }}>
+        The routers file includes amplifier sites, DWDM terminals and transponders (element_role column). Links
+        carried by an optical corridor are in the corridor file, with their sites, cards, spans and circuits.
+      </p>
+      <StatusBanner status={status} />
+    </div>
+  );
+}
+
+// Uploads an optical corridor spec (an export from above, or one made with
+// scripts/convert-corridor-sheet.py): validated first, then imported.
+function CorridorUpload({ onFleetChanged }) {
+  const [file, setFile] = useState(null);
+  const [spec, setSpec] = useState(null);
+  const [check, setCheck] = useState(null);
+  const [prune, setPrune] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState(null);
+
+  const handleFile = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFile(f);
+    setStatus(null);
+    setCheck(null);
+    setSpec(null);
+    try {
+      const parsed = JSON.parse(await f.text());
+      setSpec(parsed);
+      setCheck(await validateCorridor(parsed));
+    } catch (err) {
+      setStatus({ type: "error", text: `Not a valid corridor file: ${err.message}` });
+    }
+  };
+
+  const submit = async () => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      const r = await importCorridor(spec, { pruneL1Peerings: prune });
+      setStatus({
+        type: "success",
+        text:
+          `Imported ${spec.name}: ${r.devices_created.length} device(s) created, ${r.devices_updated.length} updated, ` +
+          `${r.spans} span(s), ${r.optical_paths} optical path(s), ${r.client_circuits} circuit(s)` +
+          (r.l1_peerings_removed.length ? `, ${r.l1_peerings_removed.length} link(s) to optical elements removed` : "") +
+          ".",
+      });
+      setFile(null);
+      setSpec(null);
+      setCheck(null);
+      await onFleetChanged();
+    } catch (err) {
+      setStatus({ type: "error", text: `Import failed: ${err.message}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card">
+      <h3>Bulk upload optical corridor (JSON)</h3>
+      <p className="settings-hint">
+        A corridor file from the Export card, or one converted from a layout sheet. Upload the routers file
+        first. Devices are matched on management IP; uploading the same file again changes nothing.
+      </p>
+      <input type="file" accept=".json,application/json" onChange={handleFile} />
+      {check && spec && (
+        <>
+          <p className="settings-hint">
+            {spec.name} from {file?.name}: {check.chain.length} line elements, {check.wavelengths_nm.length}{" "}
+            wavelength(s), {check.optical_paths.length} optical path(s).
+            {check.warnings.length > 0 && <> {check.warnings.length} warning(s): {check.warnings.join("; ")}</>}
+          </p>
+          <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer" }}>
+            <input type="checkbox" checked={prune} onChange={(e) => setPrune(e.target.checked)} />
+            Also remove BGP links that have an optical element on one side
+          </label>
+          <button className="login-submit" onClick={submit} disabled={busy} style={{ marginTop: "0.75rem" }}>
+            {busy ? "Importing…" : `Import ${spec.name}`}
+          </button>
+        </>
+      )}
+      <StatusBanner status={status} />
     </div>
   );
 }
@@ -964,6 +1170,9 @@ export default function AddFleet({ routers, onFleetChanged }) {
         <button className={tab === "bulk" ? "active" : ""} onClick={() => setTab("bulk")}>
           Bulk upload
         </button>
+        <button className={tab === "corridor" ? "active" : ""} onClick={() => setTab("corridor")}>
+          Optical corridor
+        </button>
       </div>
       {tab === "manual" && (
         <ManualEntry
@@ -975,6 +1184,7 @@ export default function AddFleet({ routers, onFleetChanged }) {
         />
       )}
       {tab === "bulk" && <BulkUpload routers={routers} onFleetChanged={onFleetChanged} />}
+      {tab === "corridor" && <CorridorBuilder routers={routers} onFleetChanged={onFleetChanged} />}
     </div>
   );
 }

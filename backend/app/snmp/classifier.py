@@ -7,12 +7,13 @@ from app.bundles import update_member_and_bundle
 from app.fault_location import describe_fault, locate_fault
 from app.incidents import service as incident_service
 from app.models import BgpPeering, BgpSessionStatus, BundleStatus, IncidentType, Router, RouterStatus, TrapEvent, TrapRuleAction
-from app.snmp import mib_registry
+from app.snmp import alarm_classes, mib_registry
 from app.snmp.flapping import evaluate_isis_adjacency_event, evaluate_link_event
 from app.snmp.oid_map import (
     BGP_ESTABLISHED_OID,
     BGP_BACKWARD_TRANSITION_OID,
     BGP_PEER_OID,
+    CONDITION_OID,
     FIBER_CUT_CLEAR_OID,
     FIBER_CUT_OID,
     FIBER_SEGMENT_OID,
@@ -21,6 +22,8 @@ from app.snmp.oid_map import (
     ISIS_ADJACENCY_UP_OID,
     LINK_DOWN_OID,
     LINK_UP_OID,
+    OPTICAL_ALARM_CLEAR_OID,
+    OPTICAL_ALARM_OID,
     ROUTER_ID_OID,
     TRAP_OID_MAP,
     lookup_trap,
@@ -113,6 +116,23 @@ def classify_and_store(
             interface_name = interface_name or mib_registry.interface_from_varbinds(rule, varbinds)
         else:
             trap_name = mib_registry.imported_name(db, trap_oid) or trap_name
+    # Optical-element alarms carry a condition code that decides what they
+    # are (see app.snmp.alarm_classes); an unknown code stays alarm-only.
+    condition = None
+    condition_code = None
+    if alarm_classes.is_optical_alarm(trap_oid):
+        condition_code = (_extract_varbind(varbinds, CONDITION_OID) or "").strip().upper() or None
+        condition = alarm_classes.condition_for(condition_code)
+        if condition is not None:
+            incident_type = condition.incident_type
+            if trap_oid == OPTICAL_ALARM_OID:
+                severity = condition.severity
+        else:
+            incident_type = IncidentType.UNKNOWN
+        trap_name = f"{trap_name}:{condition_code or '?'}"[:64]
+    alarm_class = alarm_classes.classify(trap_oid, incident_type, condition)
+    filtered = alarm_class in alarm_classes.filtered_classes(db)
+
     now = datetime.now(timezone.utc)
     router.last_seen_at = now
 
@@ -123,6 +143,9 @@ def classify_and_store(
         interface_name=interface_name,
         severity=severity,
         raw_varbinds=str(varbinds),
+        alarm_class=alarm_class,
+        condition=condition_code,
+        filtered=filtered or None,
     )
     db.add(trap_event)
     db.flush()
@@ -161,6 +184,11 @@ def classify_and_store(
         ):
             db.rollback()
             return None
+    elif trap_oid == OPTICAL_ALARM_CLEAR_OID:
+        # Clears are never filtered: an incident raised before the filter
+        # was switched on still deserves its clear.
+        if condition is not None:
+            incident_service.clear(db, router, [condition.incident_type], interface_name, now, condition=condition.code)
     elif trap_oid == BGP_ESTABLISHED_OID:
         bgp_peering = _update_bgp_peering(
             db, router, _extract_varbind(varbinds, BGP_PEER_OID), BgpSessionStatus.ESTABLISHED, now
@@ -175,10 +203,16 @@ def classify_and_store(
             bgp_peering = _update_bgp_peering(
                 db, router, _extract_varbind(varbinds, BGP_PEER_OID), BgpSessionStatus.DOWN, now
             )
-        if incident_service.is_incident_type(incident_type):
+        opens_incident = incident_service.is_incident_type(incident_type) and not filtered
+        if condition is not None and not condition.opens_incident:
+            opens_incident = False
+        if opens_incident:
             description = f"{trap_name} on {router.hostname}"
             if interface_name:
                 description += f" (interface {interface_name})"
+            if condition is not None:
+                where = f" port {interface_name}" if interface_name else ""
+                description = f"{condition.code} on {router.hostname}{where}: {condition.meaning}"[:255]
             fault_segment_index = None
             if trap_oid == FIBER_CUT_OID and peering_id is not None:
                 fault_segment_index = _parse_segment(_extract_varbind(varbinds, FIBER_SEGMENT_OID))
@@ -196,6 +230,8 @@ def classify_and_store(
                 now,
                 peering_id=peering_id,
                 fault_segment_index=fault_segment_index,
+                alarm_class=alarm_class,
+                condition=condition.code if condition is not None else None,
             )
 
     trap_event.incident_id = incident.id if incident else None
@@ -216,6 +252,9 @@ def classify_and_store(
             "severity": trap_event.severity,
             "received_at": trap_event.received_at.isoformat() if trap_event.received_at else None,
             "incident_id": trap_event.incident_id,
+            "alarm_class": alarm_class.value,
+            "condition": condition_code,
+            "filtered": filtered,
         }
     }
     if bgp_peering:

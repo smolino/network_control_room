@@ -17,7 +17,7 @@ bounding repeaters are listed for inspection; the span's own fiber is the
 other suspect.
 """
 
-from app.models import BgpPeering
+from app.models import BgpPeering, Corridor, Incident, Router
 
 
 def _point(peering: BgpPeering, index: int) -> dict:
@@ -78,3 +78,65 @@ def describe_fault(location: dict) -> str:
         f"span {start['label']}-{end['label']} (km {start['km_from_a']}-{end['km_from_a']} of"
         f" {location['distance_km']}) on {location['router_a']} <-> {location['router_b']}"
     )
+
+
+def _site_point(device: Router, km_from_a: float) -> dict:
+    site = device.site
+    return {
+        "kind": "site",
+        "label": device.hostname,
+        "site": site.name if site else device.site_name,
+        "km_from_a": round(km_from_a, 1),
+        "latitude": site.latitude if site else device.latitude,
+        "longitude": site.longitude if site else device.longitude,
+    }
+
+
+def locate_corridor_fault(db, incident: Incident) -> dict | None:
+    """Where a corridor root cause (app.rca) is: the span, with its provider
+    and A/B ends, for a fiber fault; the element itself for an amplifier,
+    trunk, channel, patch-cord or OSC fault. Same shape as locate_fault, so
+    the map's "Locate on map" works for both."""
+    corridor = db.get(Corridor, incident.corridor_id) if incident.corridor_id else None
+    if corridor is None or not corridor.spans:
+        return None
+    spans = corridor.spans
+    total = round(sum(s.length_km or 0 for s in spans), 1)
+    km_at = {}
+    km = 0.0
+    km_at[spans[0].from_device_id] = 0.0
+    for s in spans:
+        km += s.length_km or 0
+        km_at[s.to_device_id] = km
+    base = {
+        "corridor_id": corridor.id,
+        "corridor": corridor.name,
+        "diagnosis": incident.condition,
+        "router_a": corridor.site_a.name,
+        "router_b": corridor.site_z.name,
+        "distance_km": total,
+        "repeater_count": len(spans) - 1,
+        "segment_count": len(spans),
+        "repeaters_to_check": [],
+    }
+    if incident.condition in ("CABLE-CUT", "FIBER-CUT") and incident.fault_segment_index:
+        span = next((s for s in spans if s.seq == incident.fault_segment_index), None)
+        if span is None:
+            return None
+        start = _site_point(span.from_device, km_at.get(span.from_device_id, 0))
+        end = _site_point(span.to_device, km_at.get(span.to_device_id, 0))
+        return {
+            **base,
+            "segment_index": span.seq - 1,
+            "segment_length_km": round(span.length_km or 0, 1),
+            "start": start,
+            "end": end,
+            "provider": span.provider,
+            "a_end": span.a_end,
+            "b_end": span.b_end,
+            "provider_circuit_id": span.provider_circuit_id,
+        }
+    device = incident.router
+    point = _site_point(device, km_at.get(device.id, 0))
+    seq = next((s.seq for s in spans if s.from_device_id == device.id or s.to_device_id == device.id), 1)
+    return {**base, "element": True, "segment_index": seq - 1, "segment_length_km": 0.0, "start": point, "end": point}

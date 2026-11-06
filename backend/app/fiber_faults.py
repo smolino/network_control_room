@@ -64,7 +64,14 @@ def _eligible_peering_ids_and_counts(db) -> dict[str, list[tuple[int, int]]]:
     fault and the rest of the map would almost never see one."""
     peerings = (
         db.query(BgpPeering)
-        .filter(BgpPeering.status == BgpSessionStatus.ESTABLISHED, BgpPeering.repeater_count >= 2)
+        # Corridor links have a real optical path (app.corridors) - their
+        # faults come from the per-element L1 simulation, not this
+        # abstract segment picker.
+        .filter(
+            BgpPeering.status == BgpSessionStatus.ESTABLISHED,
+            BgpPeering.repeater_count >= 2,
+            BgpPeering.corridor_id.is_(None),
+        )
         .all()
     )
     by_region: dict[str, list[tuple[int, int]]] = {}
