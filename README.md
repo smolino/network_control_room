@@ -547,6 +547,34 @@ API: `GET /api/corridors[/{id}]`, `POST /api/corridors/import|validate`,
 On the map (L1 layer) a corridor is drawn through its real sites, with a
 tooltip per span. Tests: `backend/tests/test_corridors.py`.
 
+## Creating a corridor from the UI
+
+**Add Fleet > Optical corridor** builds a corridor without a sheet or a JSON
+file (`frontend/src/components/CorridorBuilder.jsx`, model in
+`frontend/src/corridorForm.js`):
+
+1. name, description and the default fiber provider;
+2. the sites from POP A to POP Z - add, remove and reorder amplifier sites;
+   each with a city (autofilled from the city list or looked up online),
+   coordinates, element hostname and management IP; **Use an existing site**
+   makes a POP shared with another corridor the same site; **Auto-name
+   elements** and **Fill IPs** (from a base address, skipping IPs already in
+   the fleet) fill the blanks; a span row between each pair of sites
+   (provider, A/B ends, length - empty = straight-line distance - and
+   provider circuit);
+3. a transponder at each POP, and the routers there (typed or picked from
+   the fleet);
+4. wavelengths: which router pair each connects, bundle names, and the
+   router ports of its circuits (transponder trunk/client ports are numbered
+   automatically unless typed).
+
+Line cards come from the Cisco ONS 15454 preset (TNCS OSC in slots 1/8,
+booster 2 and preamp 3 at a terminal, 40-ch mux 4 / demux 6, amplifier
+slot 2 A->Z and slot 7 Z->A at amplifier sites, card type selectable).
+**Check** validates without writing; **Create** imports. **Edit an existing
+corridor** loads it into the same form (its own cards and ports are kept)
+and re-imports it under the same name.
+
 ## Backing up and restoring the fleet
 
 **Add Fleet > Bulk upload > Export / back up the fleet** downloads the fleet

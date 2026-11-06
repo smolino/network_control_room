@@ -15,6 +15,7 @@ import {
 import { CITIES, CITY_BY_NAME } from "../cities.js";
 import { downloadTextFile, parseCSV, toCSV } from "../csv.js";
 import { haversineKm, REPEATER_SPACING_KM } from "../geo.js";
+import CorridorBuilder from "./CorridorBuilder.jsx";
 
 // Shared by every city <input list="city-options"> below - one datalist
 // serves any number of inputs referencing its id, so it only needs to be
@@ -1169,6 +1170,9 @@ export default function AddFleet({ routers, onFleetChanged }) {
         <button className={tab === "bulk" ? "active" : ""} onClick={() => setTab("bulk")}>
           Bulk upload
         </button>
+        <button className={tab === "corridor" ? "active" : ""} onClick={() => setTab("corridor")}>
+          Optical corridor
+        </button>
       </div>
       {tab === "manual" && (
         <ManualEntry
@@ -1180,6 +1184,7 @@ export default function AddFleet({ routers, onFleetChanged }) {
         />
       )}
       {tab === "bulk" && <BulkUpload routers={routers} onFleetChanged={onFleetChanged} />}
+      {tab === "corridor" && <CorridorBuilder routers={routers} onFleetChanged={onFleetChanged} />}
     </div>
   );
 }
