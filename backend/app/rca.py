@@ -293,22 +293,29 @@ def analyze(view: CorridorView, active: set[Alarm]) -> list[Diagnosis]:
     diagnoses: list[Diagnosis] = []
     H = view.hostnames
 
-    # 1. Line breaks: per direction, the first element whose line input is dark.
-    line_break: dict[str, tuple[str, int, int]] = {}  # direction -> ("fiber", seq, rx device) | ("amp", device, line idx)
+    # 1. Line breaks, per direction, walking the line from its source. The
+    # OSC is regenerated at every site, so "input dark + OSC of the span
+    # feeding it lost" marks that span's fiber as broken wherever it is -
+    # also behind another break. "Input dark, OSC fine" with light still
+    # arriving at the previous element = the amplifier in between failed.
+    # Anything else dark is propagation from a break further up.
+    breaks: dict[str, list[tuple]] = {AZ: [], ZA: []}  # ("fiber", seq, rx) | ("amp", device, seq)
     for direction in (AZ, ZA):
         line = view.chain if direction == AZ else list(reversed(view.chain))
+        prev_dark = False
         for i in range(1, len(line)):
             port = _line_input(view, direction, line[i])
-            if port is None or not _is_dark(active, line[i], port):
-                continue
+            dark = port is not None and _is_dark(active, line[i], port)
             a, b = (line[i - 1], line[i]) if direction == AZ else (line[i], line[i - 1])
             seq = next(s.seq for s in view.spans.values() if s.from_device_id == a and s.to_device_id == b)
             osc = _osc_rx(view, seq, direction)
-            if osc and (osc[0], osc[1], "LOS-O") in active:
-                line_break[direction] = ("fiber", seq, line[i])
-            else:
-                line_break[direction] = ("amp", line[i - 1], seq)
-            break
+            osc_lost = osc is not None and (osc[0], osc[1], "LOS-O") in active
+            if dark and osc_lost:
+                breaks[direction].append(("fiber", seq, line[i]))
+            elif dark and not prev_dark:
+                breaks[direction].append(("amp", line[i - 1], seq))
+            prev_dark = dark
+    line_break = {d for d, found in breaks.items() if found}
 
     def dead_from_span(seq: int, directions) -> dict[str, int]:
         out = {}
@@ -319,12 +326,11 @@ def analyze(view: CorridorView, active: set[Alarm]) -> list[Diagnosis]:
                         out[p.name] = idx
         return out
 
-    fiber = {d: v for d, v in line_break.items() if v[0] == "fiber"}
-    handled: set[str] = set()
-    if len(fiber) == 2 and fiber[AZ][1] == fiber[ZA][1]:
-        seq = fiber[AZ][1]
+    fiber = {d: {b[1]: b[2] for b in found if b[0] == "fiber"} for d, found in breaks.items()}
+    for seq in sorted(set(fiber[AZ]) & set(fiber[ZA])):
+        rx_az, rx_za = fiber[AZ][seq], fiber[ZA][seq]
         d = Diagnosis("CABLE-CUT", f"span:{seq}", view.spans[seq].from_device_id, "", seq, [AZ, ZA])
-        d.evidence = sorted(a for a in active if a[2] in (*DARK, "LOS-O") and a[0] in (fiber[AZ][2], fiber[ZA][2]))
+        d.evidence = sorted(a for a in active if a[2] in (*DARK, "LOS-O") and a[0] in (rx_az, rx_za))
         _explain(view, d, dead_from_span(seq, (AZ, ZA)))
         for direction in (AZ, ZA):
             d.explains.add(_osc_rx(view, seq, direction))
@@ -332,39 +338,40 @@ def analyze(view: CorridorView, active: set[Alarm]) -> list[Diagnosis]:
             f"Cable cut on {_span_label(view, seq)}: both directions dark from the next site on, OSC lost too - {_impact(d)}"
         )
         diagnoses.append(d)
-        handled = {AZ, ZA}
-    for direction, (what, a, b) in line_break.items():
-        if direction in handled:
-            continue
-        if what == "fiber":
-            seq, rx = a, b
-            d = Diagnosis("FIBER-CUT", f"span:{seq}", view.spans[seq].from_device_id, "", seq, [direction])
-            d.evidence = sorted(x for x in active if x[0] == rx and x[2] in (*DARK, "LOS-O"))
-            _explain(view, d, dead_from_span(seq, (direction,)))
-            d.explains.add(_osc_rx(view, seq, direction))
-            d.summary = (
-                f"Fiber cut on {_span_label(view, seq)}, {direction} only: {H[rx]} lost light and OSC, return fiber OK - {_impact(d)}"
-            )
-        else:
-            amp, seq = a, b
-            dead = {}
-            for p in view.och:
-                if p.direction == direction:
-                    for idx, h in enumerate(p.hops):
-                        if h.device_id == amp and h.kind in ("line_out",):
-                            dead[p.name] = idx
-            d = Diagnosis("AMP-FAIL", f"amp:{amp}:{direction}", amp, "", seq, [direction])
-            d.evidence = sorted(x for x in active if x[0] == amp and x[2] == "EQPT") + sorted(
-                x for x in active if x[2] in DARK and x[0] == (view.spans[seq].to_device_id if direction == AZ else view.spans[seq].from_device_id)
-            )
-            _explain(view, d, dead)
-            d.explains |= {(x[0], x[1]) for x in active if x[0] == amp and x[2] == "EQPT"}
-            card = next((x[1] for x in active if x[0] == amp and x[2] == "EQPT"), None)
-            d.summary = (
-                f"Amplifier failure at {H[amp]} ({view.sites[amp]}){f', slot {card}' if card else ''}, {direction}: next site "
-                f"lost light but kept the OSC of span {seq}, so the fiber is intact - {_impact(d)}"
-            )
-        diagnoses.append(d)
+    for direction, found in breaks.items():
+        for what, a, b in found:
+            if what == "fiber" and a in fiber[AZ] and a in fiber[ZA]:
+                continue  # part of a cable cut, above
+            if what == "fiber":
+                seq, rx = a, b
+                d = Diagnosis("FIBER-CUT", f"span:{seq}", view.spans[seq].from_device_id, "", seq, [direction])
+                d.evidence = sorted(x for x in active if x[0] == rx and x[2] in (*DARK, "LOS-O"))
+                _explain(view, d, dead_from_span(seq, (direction,)))
+                d.explains.add(_osc_rx(view, seq, direction))
+                d.summary = (
+                    f"Fiber cut on {_span_label(view, seq)}, {direction} only: {H[rx]} lost light and OSC, return fiber OK - {_impact(d)}"
+                )
+            else:
+                amp, seq = a, b
+                dead = {}
+                for p in view.och:
+                    if p.direction == direction:
+                        for idx, h in enumerate(p.hops):
+                            if h.device_id == amp and h.kind == "line_out":
+                                dead[p.name] = idx
+                rx = view.spans[seq].to_device_id if direction == AZ else view.spans[seq].from_device_id
+                d = Diagnosis("AMP-FAIL", f"amp:{amp}:{direction}", amp, "", seq, [direction])
+                d.evidence = sorted(x for x in active if x[0] == amp and x[2] == "EQPT") + sorted(
+                    x for x in active if x[2] in DARK and x[0] == rx
+                )
+                _explain(view, d, dead)
+                d.explains |= {(x[0], x[1]) for x in active if x[0] == amp and x[2] == "EQPT"}
+                card = next((x[1] for x in active if x[0] == amp and x[2] == "EQPT"), None)
+                d.summary = (
+                    f"Amplifier failure at {H[amp]} ({view.sites[amp]}){f', slot {card}' if card else ''}, {direction}: next site "
+                    f"lost light but kept the OSC of span {seq}, so the fiber is intact - {_impact(d)}"
+                )
+            diagnoses.append(d)
 
     # 2. One wavelength dark while the line is lit.
     for p in view.och:
@@ -416,7 +423,9 @@ def analyze(view: CorridorView, active: set[Alarm]) -> list[Diagnosis]:
     explained = set().union(*(dg.explains for dg in diagnoses)) if diagnoses else set()
     for p in view.osc:
         rx = p.hops[-1]
-        if (rx.device_id, rx.port, "LOS-O") in active and (rx.device_id, rx.port) not in explained:
+        line_in = _line_input(view, p.direction, rx.device_id)
+        traffic_lit = line_in is None or not _is_dark(active, rx.device_id, line_in)
+        if (rx.device_id, rx.port, "LOS-O") in active and traffic_lit and (rx.device_id, rx.port) not in explained:
             seq = p.hops[1].span_seq
             d = Diagnosis("OSC-FAIL", f"osc:{seq}:{p.direction}", rx.device_id, "", seq, [p.direction])
             d.evidence = [(rx.device_id, rx.port, "LOS-O")]

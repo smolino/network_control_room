@@ -252,3 +252,57 @@ def test_optical_element_alarm_alone_has_no_router_impact(world):
     play(db, [of.Event(0, OPTICAL_ALARM_OID, topo.ip("a-0006-MAD01-BIO01"), "2/LINE-IN", "OPWR-LDEG")])
     db.commit()
     assert serialize(db, db.query(Incident).all())[0].impact is None
+
+
+def _together(*scenarios):
+    """Two faults at once: both sets of alarms, each reported once."""
+    import optical_faults as of
+
+    def merged(events):
+        # An element reports a condition once, however many faults cause it
+        # (a router doesn't send linkDown twice for the same port).
+        first = {}
+        for e in sorted(events, key=lambda e: e.delay):
+            first.setdefault((e.oid, e.ip, e.interface, e.condition, e.bgp_peer_ip), e)
+        return list(first.values())
+
+    raises = merged([e for s in scenarios for e in s.raise_events])
+    clears = merged([e for s in scenarios for e in s.clear_events])
+    return of.Scenario("combined", scenarios[0].corridor, " + ".join(s.summary for s in scenarios), raises, clears)
+
+
+def test_two_cable_cuts_on_adjacent_spans(world):
+    """Found while checking the UI: the second break in a direction must be
+    seen too (its own OSC died with it), and no false OSC-FAIL."""
+    import optical_faults as of
+
+    db, corridor, topo = world
+    scenario = _together(of.cable_cut(topo, 6), of.cable_cut(topo, 5))
+    diagnoses, roots, unlinked = run(db, corridor, scenario)
+    assert sorted((d.kind, d.key) for d in diagnoses) == [("CABLE-CUT", "span:5"), ("CABLE-CUT", "span:6")]
+    assert not unlinked, [describe(i) for i in unlinked]
+    assert not repair(db, corridor, scenario)
+
+
+def test_cable_cut_behind_an_amplifier_failure(world):
+    import optical_faults as of
+    from app.models import Router
+
+    db, corridor, topo = world
+    scenario = _together(of.amp_failure(topo, "a-0006-MAD01-BIO01", "AZ"), of.cable_cut(topo, 6))
+    diagnoses, roots, unlinked = run(db, corridor, scenario)
+    amp = db.query(Router).filter(Router.hostname == "a-0006-MAD01-BIO01").one().id
+    assert sorted((d.kind, d.key) for d in diagnoses) == [("AMP-FAIL", f"amp:{amp}:AZ"), ("CABLE-CUT", "span:6")]
+    assert not unlinked, [describe(i) for i in unlinked]
+
+
+def test_osc_failure_alone(world):
+    from app import rca
+    from app.models import Router
+    from app.snmp.oid_map import OPTICAL_ALARM_OID
+    import optical_faults as of
+
+    db, corridor, topo = world
+    play(db, [of.Event(0, OPTICAL_ALARM_OID, topo.ip("a-0004-MAD01-BIO01"), "1/OSC-IN", "LOS-O")])
+    diagnoses = rca.evaluate(db, corridor, datetime.now(timezone.utc), force=True)
+    assert [(d.kind, d.key) for d in diagnoses] == [("OSC-FAIL", "osc:4:AZ")]

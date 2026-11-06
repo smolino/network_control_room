@@ -67,6 +67,9 @@ const REPEATER_STROKE = "#581c87";
 // Modelled optical corridor (dark fiber through real amplifier sites, see
 // backend/app/corridors.py) - same purple family as the repeater dots.
 const FIBER_COLOR = "#a855f7";
+// A fiber span the root-cause engine found cut - red like anything down,
+// and the most prominent thing on the map while it lasts.
+const FIBER_CUT_COLOR = "#ef4444";
 const ALERT_STROKE = "#f97316";
 // A router whose device reported the problem gone (e.g. linkUp) while its
 // incident is still open for an engineer to confirm: up again, but not
@@ -391,6 +394,21 @@ export default function MapView({
   const corridorFaults = useMemo(
     () => corridors.flatMap((c) => (c.faults || []).map((f) => ({ ...f, corridor: c }))),
     [corridors]
+  );
+  const corridorFaultByPeering = useMemo(() => {
+    const out = {};
+    for (const f of corridorFaults) for (const id of f.peering_ids) out[id] = f;
+    return out;
+  }, [corridorFaults]);
+  // Both elements at the ends of a cut span - the two sites a field crew
+  // works between.
+  const cutSpanEnds = useMemo(
+    () =>
+      corridorFaults.flatMap((f) => {
+        const span = f.kind.endsWith("-CUT") && f.corridor.spans.find((s) => s.seq === f.span_seq);
+        return span ? [span.from_device_id, span.to_device_id].map((id) => ({ id, fault: f })) : [];
+      }),
+    [corridorFaults]
   );
   const symptomaticRouterIds = useMemo(() => {
     const ids = new Set();
@@ -838,18 +856,34 @@ export default function MapView({
               [a.latitude, a.longitude],
               [b.latitude, b.longitude],
             ]);
+            // Down because of a corridor root cause (a cut span, a failed
+            // amplifier): drawn as its consequence - thin and dashed - so the
+            // eye goes to the faulty span, not to this straight L3 line.
+            const causedBy = down ? corridorFaultByPeering[p.id] : null;
             const lines =
               showL3 && showBgpLinks
                 ? worldCopies(positions).map((pos, i) => (
                     <Polyline
-                      key={`${p.id}-${i}`}
+                      key={`${p.id}-${i}${causedBy ? "-symptom" : ""}`}
                       positions={pos}
-                      pathOptions={{
-                        color: BGP_COLOR[p.status] || BGP_COLOR.established,
-                        weight: down ? 2.5 : 1.5,
-                        opacity: down ? 0.9 : 0.6,
-                      }}
-                    />
+                      pathOptions={
+                        causedBy
+                          ? { color: BGP_COLOR.down, weight: 1.5, opacity: 0.7, dashArray: "6 6" }
+                          : {
+                              color: BGP_COLOR[p.status] || BGP_COLOR.established,
+                              weight: down ? 2.5 : 1.5,
+                              opacity: down ? 0.9 : 0.6,
+                            }
+                      }
+                    >
+                      {causedBy && (
+                        <Tooltip sticky>
+                          {a.hostname} ↔ {b.hostname} (L3) down because of incident #{causedBy.incident_id}:{" "}
+                          {causedBy.kind}
+                          {causedBy.span_seq ? ` on span ${causedBy.span_seq}` : ""}
+                        </Tooltip>
+                      )}
+                    </Polyline>
                   ))
                 : [];
             // A corridor link's physical path is drawn from its corridor
@@ -935,13 +969,13 @@ export default function MapView({
                   positions={pos}
                   pathOptions={
                     fault
-                      ? { color: ALERT_STROKE, weight: blinkOn ? 6 : 4, opacity: blinkOn ? 1 : 0.5 }
+                      ? { color: FIBER_CUT_COLOR, weight: blinkOn ? 8 : 6, opacity: blinkOn ? 1 : 0.6 }
                       : { color: FIBER_COLOR, weight: 2.5, opacity: 0.75 }
                   }
                 >
                   <Tooltip sticky>
                     {fault && (
-                      <div style={{ color: ALERT_STROKE, fontWeight: 600, maxWidth: 360, whiteSpace: "normal" }}>
+                      <div style={{ color: FIBER_CUT_COLOR, fontWeight: 600, maxWidth: 360, whiteSpace: "normal" }}>
                         {fault.kind} · incident #{fault.incident_id} {fault.priority ? `(${fault.priority})` : ""}
                         <br />
                         {fault.summary}
@@ -961,6 +995,24 @@ export default function MapView({
               ));
             })
           )}
+
+        {showL1 &&
+          cutSpanEnds
+            .filter(({ id }) => markerPositions[id])
+            .map(({ id, fault }) => (
+              <CircleMarker
+                key={`cut-end-${fault.incident_id}-${id}`}
+                center={markerPositions[id]}
+                radius={blinkOn ? 12 : 10}
+                pathOptions={{ color: FIBER_CUT_COLOR, weight: 3, fill: false, opacity: blinkOn ? 1 : 0.6 }}
+              >
+                <Tooltip>
+                  {routerById[id]?.hostname} · {routerById[id]?.site_name}
+                  <br />
+                  end of span {fault.span_seq} - {fault.kind} (incident #{fault.incident_id})
+                </Tooltip>
+              </CircleMarker>
+            ))}
 
         {showL1 &&
           corridorFaults
