@@ -372,8 +372,13 @@ def _upsert_site(db: Session, spec) -> Site:
     if site is None:
         site = Site(code=spec.code)
         db.add(site)
-    for attr in ("name", "kind", "city", "country", "latitude", "longitude"):
+    for attr in ("name", "kind", "latitude", "longitude"):
         setattr(site, attr, getattr(spec, attr))
+    # A site shared by several corridors may be imported from a spec that
+    # doesn't repeat its city/country - keep what's stored rather than blank it.
+    for attr in ("city", "country"):
+        if getattr(spec, attr) or getattr(site, attr) is None:
+            setattr(site, attr, getattr(spec, attr))
     return site
 
 
@@ -634,7 +639,8 @@ def corridor_route(db: Session, corridor: Corridor) -> list[RoutePointOut]:
         ids = sorted({device.id} | pop_devices.get(site.id, set()))
         route.append(
             RoutePointOut(
-                site_code=site.code, name=site.name, kind=site.kind, latitude=site.latitude, longitude=site.longitude, device_ids=ids
+                site_code=site.code, name=site.name, kind=site.kind, city=site.city, country=site.country,
+                latitude=site.latitude, longitude=site.longitude, device_ids=ids,
             )
         )
     return route
