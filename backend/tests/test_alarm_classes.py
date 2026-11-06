@@ -163,3 +163,15 @@ def test_bundle_member_link_down_does_not_take_the_router_down(db, monkeypatch):
     trap(db, "10.0.0.2", LINK_DOWN_OID, port="GigabitEthernet0/1")  # an unprotected port still does
     db.refresh(rtr)
     assert rtr.status == RouterStatus.DOWN
+
+
+def test_optical_rate_is_its_own_setting(db):
+    from app.api.simulation import SimulationRates, get_status, set_rates
+
+    assert get_status(db).optical_rate == 1.0
+    out = set_rates(SimulationRates(optical_rate=2.5), db)
+    assert out.optical_rate == 2.5 and out.l1_rate == 1.0 and out.l3_rate == 1.0
+    assert out.optical_base_per_hour == 3600 / 450  # 300-600 s between faults by default
+    assert out.optical_corridors == 0
+    with pytest.raises(Exception):
+        SimulationRates(optical_rate=9)

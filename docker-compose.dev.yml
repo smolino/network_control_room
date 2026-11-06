@@ -16,6 +16,10 @@ services:
       FIBER_FAULT_INTERVAL_MIN_SECONDS: 180
       FIBER_FAULT_INTERVAL_MAX_SECONDS: 360
       FIBER_FAULT_DURATION_SECONDS: 60
+      # Same values as the simulator's below - only for the Settings slider's
+      # "about N optical failures an hour".
+      OPTICAL_FAULT_INTERVAL_MIN_SECONDS: 300
+      OPTICAL_FAULT_INTERVAL_MAX_SECONDS: 600
 
   simulator:
     build: ./simulator
@@ -45,7 +49,7 @@ services:
       BGP_INCIDENT_INTERVAL_SECONDS: 600
       BUNDLE_FAILURE_INTERVAL_SECONDS: 900
       # Faults on modelled optical corridors (simulator/optical_faults.py),
-      # divided by the Settings > Simulation L1 slider.
+      # divided by the Settings > Simulation optical-failures slider.
       OPTICAL_FAULT_INTERVAL_MIN_SECONDS: 300
       OPTICAL_FAULT_INTERVAL_MAX_SECONDS: 600
       OPTICAL_FAULT_DURATION_MIN_SECONDS: 120

@@ -775,6 +775,7 @@ function rateLabel(rate) {
 function IncidentRates({ initial, canEdit }) {
   const [l1, setL1] = useState(initial.l1_rate);
   const [l3, setL3] = useState(initial.l3_rate);
+  const [optical, setOptical] = useState(initial.optical_rate ?? 1);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const saveTimer = useRef(null);
@@ -798,6 +799,7 @@ function IncidentRates({ initial, canEdit }) {
   };
 
   const l1PerHour = initial.l1_base_per_hour * l1;
+  const opticalPerHour = (initial.optical_base_per_hour || 0) * optical;
 
   return (
     <>
@@ -809,7 +811,7 @@ function IncidentRates({ initial, canEdit }) {
       {error && <div className="login-error">{error}</div>}
       <div className="rate-slider">
         <label htmlFor="l1-rate">
-          L1 physical (fibre cuts) <strong>{rateLabel(l1)}</strong>
+          L1 physical (fibre cuts on plain links) <strong>{rateLabel(l1)}</strong>
         </label>
         <input
           id="l1-rate"
@@ -823,7 +825,7 @@ function IncidentRates({ initial, canEdit }) {
         />
         <span className="settings-hint">
           {initial.l1_base_per_hour > 0
-            ? `About ${l1PerHour.toFixed(1)} fibre cuts an hour.`
+            ? `About ${l1PerHour.toFixed(1)} fibre cuts an hour, on BGP links without a modelled optical corridor.`
             : "The fibre-cut generator is turned off on this server (FIBER_FAULT_SIMULATION)."}
         </span>
       </div>
@@ -843,6 +845,30 @@ function IncidentRates({ initial, canEdit }) {
         />
         <span className="settings-hint">
           Link flaps, BGP/BFD/IS-IS drops, bundle failures and CPU/temperature/power alarms.
+        </span>
+      </div>
+      <div className="rate-slider">
+        <label htmlFor="optical-rate">
+          Optical failures (corridors) <strong>{rateLabel(optical)}</strong>
+        </label>
+        <input
+          id="optical-rate"
+          type="range"
+          min={0}
+          max={RATE_MAX}
+          step={RATE_STEP}
+          value={optical}
+          disabled={!canEdit}
+          onChange={change(setOptical, "optical_rate")}
+        />
+        <span className="settings-hint">
+          {!initial.optical_corridors
+            ? "No optical corridor yet - create one in Add Fleet > Optical corridor."
+            : optical === 0
+              ? "Off - no optical failures or optical background alarms."
+              : `Up to about ${opticalPerHour.toFixed(1)} optical failures an hour on ${initial.optical_corridors} corridor${
+                  initial.optical_corridors === 1 ? "" : "s"
+                } (cable and fiber cuts, amplifier, transponder and patch-cord failures - one at a time per corridor), plus background power/fan alarms.`}
         </span>
       </div>
       {saved && <div className="form-success">Saved.</div>}
