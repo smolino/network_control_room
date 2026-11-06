@@ -587,6 +587,8 @@ class RoutePointOut(BaseModel):
     site_code: str
     name: str
     kind: str
+    city: str | None = None
+    country: str | None = None
     latitude: float
     longitude: float
     device_ids: list[int]

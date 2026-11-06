@@ -142,6 +142,31 @@ def test_import_is_idempotent(raw):
         assert terminal.element_role.value == "terminal" and terminal.site.code == "BIO01"
 
 
+def test_reimport_without_city_keeps_the_sites_city(raw):
+    """A second corridor that reuses a site (picked in the builder) may not
+    repeat its city/country - importing it must not blank them."""
+    from app.corridors import import_corridor
+    from app.db import Base, SessionLocal, engine
+    from app.models import Site
+
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        import_corridor(db, CorridorSpec.model_validate(raw))
+        db.commit()
+        code = raw["sites"][0]["code"]
+        before = db.query(Site).filter(Site.code == code).one()
+        city, country = before.city, before.country
+        assert city
+        again = copy.deepcopy(raw)
+        again["sites"][0]["city"] = None
+        again["sites"][0]["country"] = None
+        import_corridor(db, CorridorSpec.model_validate(again))
+        db.commit()
+        site = db.query(Site).filter(Site.code == code).one()
+        assert (site.city, site.country) == (city, country)
+
+
 def test_export_round_trips(raw):
     """Backup = export_spec; restore = import it into an empty fleet. The
     restored corridor must be the same corridor."""

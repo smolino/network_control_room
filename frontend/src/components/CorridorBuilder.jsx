@@ -79,7 +79,14 @@ export default function CorridorBuilder({ routers, onFleetChanged }) {
   const useKnownSite = (site, code) => {
     const pt = knownSites.find((k) => k.site_code === code);
     if (!pt) return;
-    setSite(site.id, { code: pt.site_code, name: pt.name, latitude: String(pt.latitude), longitude: String(pt.longitude) });
+    setSite(site.id, {
+      code: pt.site_code,
+      name: pt.name,
+      city: pt.city || "",
+      country: pt.country || "",
+      latitude: String(pt.latitude),
+      longitude: String(pt.longitude),
+    });
   };
 
   // Any edit invalidates the last check.
@@ -159,22 +166,27 @@ export default function CorridorBuilder({ routers, onFleetChanged }) {
   const fillIps = () => {
     const start = ipToInt(baseIp.trim());
     if (start === null) return setErrors(["Base IP must look like 10.10.2.1"]);
-    const used = new Set(routers.map((r) => r.mgmt_ip));
-    let n = start;
-    const next = () => {
-      while (used.has(intToIp(n))) n++;
-      const ip = intToIp(n);
-      used.add(ip);
-      n++;
-      return ip;
-    };
-    update((f) => ({
-      ...f,
-      sites: f.sites.map((s) => (s.mgmt_ip.trim() ? s : { ...s, mgmt_ip: next() })),
-      txpA: f.txpA.mgmt_ip.trim() ? f.txpA : { ...f.txpA, mgmt_ip: next() },
-      txpZ: f.txpZ.mgmt_ip.trim() ? f.txpZ : { ...f.txpZ, mgmt_ip: next() },
-      routers: f.routers.map((r) => (r.mgmt_ip.trim() || !r.hostname.trim() ? r : { ...r, mgmt_ip: next() })),
-    }));
+    update((f) => {
+      // Skip IPs in the fleet and IPs this form already holds, so pressing
+      // Fill IPs again (e.g. after adding a router) never hands out a duplicate.
+      const used = new Set(routers.map((r) => r.mgmt_ip));
+      for (const d of [...f.sites, f.txpA, f.txpZ, ...f.routers]) if (d.mgmt_ip.trim()) used.add(d.mgmt_ip.trim());
+      let n = start;
+      const next = () => {
+        while (used.has(intToIp(n))) n++;
+        const ip = intToIp(n);
+        used.add(ip);
+        n++;
+        return ip;
+      };
+      return {
+        ...f,
+        sites: f.sites.map((s) => (s.mgmt_ip.trim() ? s : { ...s, mgmt_ip: next() })),
+        txpA: f.txpA.mgmt_ip.trim() ? f.txpA : { ...f.txpA, mgmt_ip: next() },
+        txpZ: f.txpZ.mgmt_ip.trim() ? f.txpZ : { ...f.txpZ, mgmt_ip: next() },
+        routers: f.routers.map((r) => (r.mgmt_ip.trim() || !r.hostname.trim() ? r : { ...r, mgmt_ip: next() })),
+      };
+    });
   };
 
   const addFleetRouter = (end, id) => {
