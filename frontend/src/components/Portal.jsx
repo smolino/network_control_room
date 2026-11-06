@@ -16,6 +16,24 @@ const FEATURES = [
       "A fiber cut raises one optical alarm and a burst of router-side symptoms. A Neo4j topology graph maps every interface to the fiber span carrying it, so the cut becomes a single root-cause incident and the symptoms are suppressed under it.",
   },
   {
+    icon: "〰",
+    title: "Dark-fibre DWDM corridors",
+    text:
+      "Model the real optical line: DWDM terminals, in-line amplifier huts, transponders, wavelengths and every rented fibre span, with both directions and the supervisory channel. Build a corridor in a guided form, check it before saving, and export it as JSON for backup.",
+  },
+  {
+    icon: "⚡",
+    title: "Optical root-cause engine",
+    text:
+      "Walks the line in each direction, element by element. It tells a cable cut (both directions) from a single-fibre cut, an amplifier failure, a lost wavelength, a bad patch cord or a supervisory-channel fault, and links every other alarm to that one root.",
+  },
+  {
+    icon: "⛭",
+    title: "Alarm classes and filtering",
+    text:
+      "Every alarm is classed as transport, logical, equipment or management. Hide the hardware and environment noise - fans, power, temperature - so the queue shows the faults on the fibre network.",
+  },
+  {
     icon: "🔒",
     title: "Secure, role-based access",
     text:
@@ -25,7 +43,7 @@ const FEATURES = [
     icon: "📍",
     title: "Fault location down to the span",
     text:
-      "Fiber-cut alarms are narrowed to the span between two repeaters, with km marks and coordinates. Field crews know which repeaters to inspect before they leave the depot.",
+      "Faults are narrowed to the span between two amplifier sites, with the fibre provider, its circuit ID, km marks and coordinates. The guidance says whether to open a provider ticket and run an OTDR test, or send a crew to a named site.",
   },
   {
     icon: "◉",
@@ -43,7 +61,7 @@ const FEATURES = [
     icon: "🗺",
     title: "Live world map of the fleet",
     text:
-      "Backbone routers, BGP mesh, customer uplinks and SMF repeaters are drawn on one map. Routers with an unhandled incident blink until someone picks them up.",
+      "Backbone routers, BGP mesh, customer uplinks and optical corridors are drawn on one map, with L1 and L3 layers. A cut span turns red with both ends ringed, and the router links it took down are shown dashed.",
   },
 ];
 
@@ -53,7 +71,7 @@ const AUDIENCES = [
     title: "Regional & national telcos and ISPs",
     text:
       "Operators running a few hundred backbone routers and thousands of single-homed CPEs. One fiber cut can trigger dozens of alarms and take a whole region of customers offline. They gain the most from correlation and blast-radius scoring.",
-    points: ["Hundreds of PE/P routers", "Thousands of last-mile CPEs", "Lean NOC, 24/7 SLAs"],
+    points: ["Hundreds of PE/P routers", "DWDM over rented dark fibre", "Thousands of last-mile CPEs", "Lean NOC, 24/7 SLAs"],
     highlight: true,
   },
   {
@@ -74,8 +92,8 @@ const AUDIENCES = [
 
 const PIPELINE = [
   { step: "01", title: "Mediation", text: "Receives SNMP traps from the routers and publishes them to Kafka." },
-  { step: "02", title: "Normalization", text: "Maps vendor OIDs to a common alarm model with a layer (L1 / L3)." },
-  { step: "03", title: "Correlation", text: "Walks the Neo4j topology graph to link symptoms to their root cause." },
+  { step: "02", title: "Normalization", text: "Maps vendor OIDs to a common alarm model with a layer (L1 / L3) and an alarm class, and filters out the classes you hide." },
+  { step: "03", title: "Correlation", text: "Walks the optical line in each direction and the Neo4j topology graph to link symptoms to their root cause." },
   { step: "04", title: "Human review", text: "Sends what needs a person to a live, prioritised board." },
 ];
 
@@ -133,7 +151,7 @@ function VideoPlayer({ id, title }) {
 }
 
 function HeroVisual() {
-  // A stylised fiber cut: one L1 root cause, two suppressed L3 symptoms.
+  // A stylised cable cut: one L1 root cause, its symptoms linked under it.
   return (
     <div className="portal-visual" aria-hidden="true">
       <svg viewBox="0 0 420 300" className="portal-visual-svg">
@@ -187,13 +205,13 @@ function HeroVisual() {
 
       <div className="pv-card pv-card-root">
         <span className="pv-badge pv-badge-l1">L1 · ROOT CAUSE</span>
-        <strong>Fiber cut · span R3 → R4</strong>
-        <small>km 41.2 – 58.7 · 38 customers degraded</small>
+        <strong>Cable cut · span 6, amp → amp</strong>
+        <small>both directions dark · km 41.2 – 58.7</small>
       </div>
       <div className="pv-card pv-card-sym">
-        <span className="pv-badge pv-badge-l3">L3 · SUPPRESSED</span>
-        <strong>2 × IS-IS adjacency down</strong>
-        <small>linked to the fiber cut</small>
+        <span className="pv-badge pv-badge-l3">SYMPTOMS · LINKED</span>
+        <strong>66 alarms · LOS, IS-IS, BGP</strong>
+        <small>linked to the cable cut</small>
       </div>
     </div>
   );
@@ -238,9 +256,9 @@ export default function Portal({ onLoginClick }) {
               From alarm storm to <span className="portal-grad">one root cause</span>, automatically.
             </h1>
             <p className="portal-lead">
-              Network Control Room watches your router fleet in real time. It links physical-layer faults to the
-              control-plane symptoms they cause, and shows your engineers which customers are affected and where
-              to send the crew.
+              Network Control Room watches your routers and your DWDM optical line in real time. It traces a fault
+              along the fibre to the span or amplifier that caused it, links the control-plane symptoms to it, and
+              shows your engineers which customers are affected and where to send the crew.
             </p>
             <div className="portal-cta-row">
               <a href="/login" className="portal-btn portal-btn-primary portal-btn-lg" onClick={goLogin}>
@@ -257,8 +275,8 @@ export default function Portal({ onLoginClick }) {
 
       <section className="portal-strip">
         <div className="portal-strip-inner">
-          <div><strong>L1 + L3</strong><span>layered alarm model</span></div>
-          <div><strong>Real time</strong><span>Kafka event pipeline</span></div>
+          <div><strong>DWDM-aware</strong><span>spans, amplifiers, wavelengths</span></div>
+          <div><strong>1 incident</strong><span>per cut, every alarm linked</span></div>
           <div><strong>Span-level</strong><span>fiber fault location</span></div>
           <div><strong>P1–P4</strong><span>priority from customer impact</span></div>
         </div>
@@ -296,13 +314,15 @@ export default function Portal({ onLoginClick }) {
           </div>
           <div className="portal-problem-text">
             <p>
-              When a physical span fails, every router that uses it reports its own symptoms: interfaces flapping,
-              adjacencies dropping, BGP sessions resetting. Traditional monitoring shows each one as a separate
+              When a fibre span fails, every amplifier and transponder downstream loses light and every router
+              that uses it reports its own symptoms: interfaces flapping, adjacencies dropping, BGP sessions
+              resetting. Traditional monitoring shows each one as a separate
               problem, and engineers lose time investigating routers that were never broken.
             </p>
             <p>
-              Network Control Room knows which fiber carries which interface. It raises <em>one</em> incident for
-              the cut, suppresses the symptoms beneath it, and tells the field crew exactly which span to repair.
+              Network Control Room knows the optical path of every wavelength and which fibre carries which
+              interface. It raises <em>one</em> incident for the cut, links the symptoms beneath it, and tells the
+              field crew exactly which span to repair - and which provider to call.
             </p>
           </div>
         </div>
@@ -379,7 +399,9 @@ export default function Portal({ onLoginClick }) {
           </div>
           <ul className="portal-benefit-list">
             <li><strong>Shorter time to resolve:</strong> engineers start from the root cause, not from the loudest symptom.</li>
-            <li><strong>Fewer truck rolls:</strong> crews are sent to the exact span between two repeaters.</li>
+            <li><strong>Fewer truck rolls:</strong> crews are sent to the exact span between two amplifier sites.</li>
+            <li><strong>Faster provider tickets:</strong> a cut on rented fibre comes with the provider, circuit ID and km marks ready to send.</li>
+            <li><strong>Less noise:</strong> hardware and environment alarms can be filtered out, so the queue is about the network.</li>
             <li><strong>Clear accountability:</strong> every incident shows who owns it, which team it was dispatched to, and how it was resolved.</li>
             <li><strong>Customer-first priorities:</strong> outages that take customers offline go to the top of the queue.</li>
             <li><strong>Secure by default:</strong> role-based access (viewer, operator, admin) and two-factor sign-in.</li>
@@ -418,7 +440,7 @@ export default function Portal({ onLoginClick }) {
       <footer className="portal-footer">
         <div className="portal-container portal-footer-inner">
           <span>© {new Date().getFullYear()} Network Control Room</span>
-          <span>Network assurance · Root-cause correlation · Customer impact</span>
+          <span>Network assurance · Optical root cause · Customer impact</span>
           <a href={CONTACT_HREF} className="portal-footer-mail">{CONTACT_EMAIL}</a>
         </div>
       </footer>
