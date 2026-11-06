@@ -644,6 +644,25 @@ ends' sites with coordinates and what to ask for (OTDR) or whom to dispatch.
 `backend/tests/test_rca.py` replays every simulator scenario through the real
 classifier and checks the diagnosis against the ground truth.
 
+## Corridor faults in the UI
+
+* **Map (L1 layer):** a span with a cable/fiber cut pulses orange along the
+  corridor, with the diagnosis and impact in its tooltip; an element fault
+  (amplifier, transponder, patch cord, OSC) gets a pulsing ring on the
+  element. Routers on the circuits it takes down get the dashed
+  "symptomatic" ring. `GET /api/corridors` carries each corridor's open
+  `faults`.
+* **Locate on map** works for corridor roots: `fault_location` gives the
+  span (both ends' sites and km from the A-end POP, provider, A/B ends,
+  provider circuit) or the element, and the panel says what to do.
+* **Impact:** a root's blast radius is the routers on the circuits it takes
+  down (from its linked symptoms), with `circuits_down` and `links_down`;
+  losing whole L3 links counts as an outage. An optical element's own alarm
+  names no router on its own (no more "0 customers at risk via 1 primary"
+  for an amplifier).
+* **Header:** routers and optical elements are counted separately
+  ("4 routers · 11/11 optical alarmed").
+
 ## Customer impact (blast radius)
 
 Every open, service-affecting incident (link down/flap, BGP, BFD, IS-IS,

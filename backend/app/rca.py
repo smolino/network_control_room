@@ -429,6 +429,52 @@ def analyze(view: CorridorView, active: set[Alarm]) -> list[Diagnosis]:
     return diagnoses
 
 
+# --- what a root takes down -------------------------------------------------------
+
+
+@dataclass
+class Scope:
+    circuit_ids: set[int] = field(default_factory=set)
+    peering_ids: set[int] = field(default_factory=set)
+    router_ids: set[int] = field(default_factory=set)  # L3 routers on those circuits
+
+
+def root_scopes(db: Session, roots: list[Incident]) -> dict[int, Scope]:
+    """What each corridor root takes down, from the symptoms linked to it:
+    the client circuits whose router ports lost their link (and so their
+    routers), and the L3 links whose bundle went with them. Read from the
+    linked incidents rather than re-diagnosing, so it matches what the
+    incident list shows."""
+    roots = [r for r in roots if r.corridor_id is not None]
+    if not roots:
+        return {}
+    ids = [r.id for r in roots]
+    symptoms: dict[int, set[tuple[int, str]]] = {r.id: set() for r in roots}
+    for root_id, router_id, iface in db.query(Incident.root_cause_incident_id, Incident.router_id, Incident.interface_name).filter(
+        Incident.root_cause_incident_id.in_(ids)
+    ):
+        symptoms[root_id].add((router_id, iface))
+    corridor_ids = {r.corridor_id for r in roots}
+    circuits = [
+        (c.corridor_id, c.id, c.peering_id, c.a_router_port.device_id, c.a_router_port.name, c.z_router_port.device_id, c.z_router_port.name)
+        for c in db.query(ClientCircuit).filter(ClientCircuit.corridor_id.in_(corridor_ids))
+    ]
+    bundles = {(b.router_id, b.name): b.peering_id for b in db.query(InterfaceBundle)}
+    out = {}
+    for r in roots:
+        scope = Scope()
+        seen = symptoms[r.id]
+        for corridor_id, cid, peering_id, ar, ap, zr, zp in circuits:
+            if corridor_id == r.corridor_id and ((ar, ap) in seen or (zr, zp) in seen):
+                scope.circuit_ids.add(cid)
+                scope.router_ids |= {ar, zr}
+        for router_id, iface in seen:
+            if (router_id, iface) in bundles:
+                scope.peering_ids.add(bundles[(router_id, iface)])
+        out[r.id] = scope
+    return out
+
+
 # --- acting on it --------------------------------------------------------------
 
 
@@ -460,6 +506,9 @@ def apply(db: Session, view: CorridorView, diagnoses: list[Diagnosis], now: date
         elif root.condition != d.kind or root.description != d.summary[:255]:
             service.update_rca_root(db, root, router, d.kind, KINDS[d.kind], d.summary, now)
         service.link_symptoms(db, root, _explained_incidents(db, view, d, root), now)
+        db.flush()
+        # Its impact (and so its priority) depends on what's linked to it.
+        service.refresh_priorities(db, [root])
 
 
 def _explained_incidents(db: Session, view: CorridorView, d: Diagnosis, root: Incident) -> list[Incident]:

@@ -329,7 +329,15 @@ export default function App() {
         <h1>Network Control Room</h1>
         {stats && (
           <div className="stats-strip">
-            <span><strong>{stats.total_routers}</strong> primaries</span>
+            <span><strong>{stats.total_routers}</strong> routers</span>
+            {stats.total_optical_elements > 0 && (
+              <span title="Transponders, DWDM terminals and in-line amplifiers - with an open alarm / in total">
+                <strong>
+                  {stats.optical_elements_alarmed}/{stats.total_optical_elements}
+                </strong>{" "}
+                optical alarmed
+              </span>
+            )}
             <span><strong>{stats.total_customer_routers}</strong> customers</span>
             <span><strong>{stats.routers_up}</strong> up</span>
             <span><strong>{stats.routers_down}</strong> down</span>

@@ -41,7 +41,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.correlation import find_l3_symptoms, find_open_l1_root_cause
-from app.fault_location import locate_fault
+from app.fault_location import locate_corridor_fault, locate_fault
 from app.impact import Impact, compute_impacts
 from app.models import (
     USER_RESOLUTION_REASONS,
@@ -699,6 +699,9 @@ def serialize(db: Session, incidents: list[Incident]) -> list[IncidentOut]:
             item.impact = IncidentImpact(**impacts[incident.id].summary())
         if incident.peering is not None and incident.fault_segment_index is not None:
             location = locate_fault(incident.peering, incident.fault_segment_index)
+            item.fault_location = FaultLocation(**location) if location else None
+        elif incident.corridor_id is not None:
+            location = locate_corridor_fault(db, incident)
             item.fault_location = FaultLocation(**location) if location else None
         item.router_type = router_types.get(incident.router_id)
         item.symptom_count = symptom_counts.get(incident.id, 0)

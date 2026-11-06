@@ -41,6 +41,7 @@ from app.models import (
     ElementRole,
     FiberSpan,
     Incident,
+    IncidentStatus,
     OpticalPath,
     PathHop,
     Port,
@@ -52,6 +53,7 @@ from app.models import (
 from app.schemas import (
     CarriedOut,
     CircuitOut,
+    CorridorFaultOut,
     CorridorImportOut,
     CorridorOut,
     CorridorSpec,
@@ -662,6 +664,27 @@ def corridor_out(db: Session, corridor: Corridor, detail: bool = False) -> Corri
         spans=spans,
         peering_ids=peering_ids,
     )
+    roots = (
+        db.query(Incident)
+        .filter(Incident.corridor_id == corridor.id, Incident.status == IncidentStatus.OPEN)
+        .order_by(Incident.id)
+        .all()
+    )
+    if roots:
+        from app.rca import root_scopes
+
+        scopes = root_scopes(db, roots)
+        for r in roots:
+            scope = scopes.get(r.id)
+            out.faults.append(
+                CorridorFaultOut(
+                    incident_id=r.id, kind=r.condition or "", device_id=r.router_id, span_seq=r.fault_segment_index,
+                    stage=r.stage.value if r.stage else None, priority=r.priority, summary=r.description,
+                    circuit_ids=sorted(scope.circuit_ids) if scope else [],
+                    peering_ids=sorted(scope.peering_ids) if scope else [],
+                    router_ids=sorted(scope.router_ids) if scope else [],
+                )
+            )
     if detail:
         for p in corridor.paths:
             hops = []

@@ -210,3 +210,45 @@ def test_root_description_fits_and_analysis_names_provider_and_sites(world):
     analysis = generate_analysis(root, root.router)
     assert "Fiberprov" in analysis["suggested_solution"] and "OTDR" in analysis["suggested_solution"]
     assert "a-0007-MAD01-BIO01" in analysis["suggested_solution"] and "a-0004-MAD01-BIO01" in analysis["suggested_solution"]
+
+
+def test_root_is_located_and_has_backbone_impact(world):
+    import optical_faults as of
+    from app.corridors import corridor_out
+    from app.incidents.service import serialize
+    from app.models import Router
+
+    db, corridor, topo = world
+    _, roots, _ = run(db, corridor, of.cable_cut(topo, 4))
+    out = serialize(db, roots)[0]
+    loc = out.fault_location
+    assert loc.diagnosis == "CABLE-CUT" and loc.segment_index == 3 and not loc.element
+    assert (loc.start.label, loc.end.label) == ("a-0007-MAD01-BIO01", "a-0004-MAD01-BIO01")
+    assert loc.provider == "Fiberprov" and loc.start.km_from_a < loc.end.km_from_a
+    assert out.impact.level == "outage" and out.impact.links_down == 2 and out.impact.circuits_down == 6
+    routers = {r.id for r in db.query(Router).filter(Router.element_role == "router")}
+    assert set(out.impact.primary_router_ids) == routers  # the four ASR9Ks, not the amplifier
+    fault = corridor_out(db, corridor).faults[0]
+    assert fault.incident_id == roots[0].id and fault.span_seq == 4 and len(fault.peering_ids) == 2
+
+
+def test_element_fault_is_located_on_the_element(world):
+    import optical_faults as of
+    from app.incidents.service import serialize
+
+    db, corridor, topo = world
+    _, roots, _ = run(db, corridor, of.amp_failure(topo, "a-0001-MAD01-BIO01", "AZ"))
+    loc = serialize(db, roots)[0].fault_location
+    assert loc.element and loc.start.label == loc.end.label == "a-0001-MAD01-BIO01"
+
+
+def test_optical_element_alarm_alone_has_no_router_impact(world):
+    import optical_faults as of
+    from app.incidents.service import serialize
+    from app.models import Incident
+    from app.snmp.oid_map import OPTICAL_ALARM_OID
+
+    db, corridor, topo = world
+    play(db, [of.Event(0, OPTICAL_ALARM_OID, topo.ip("a-0006-MAD01-BIO01"), "2/LINE-IN", "OPWR-LDEG")])
+    db.commit()
+    assert serialize(db, db.query(Incident).all())[0].impact is None

@@ -27,7 +27,17 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
 
-from app.models import BgpPeering, BgpSessionStatus, Incident, IncidentStatus, IncidentType, Router, RouterStatus, RouterType
+from app.models import (
+    BgpPeering,
+    BgpSessionStatus,
+    ElementRole,
+    Incident,
+    IncidentStatus,
+    IncidentType,
+    Router,
+    RouterStatus,
+    RouterType,
+)
 
 # Incident types that take traffic down or reduce forwarding redundancy.
 SERVICE_AFFECTING_TYPES = {
@@ -47,6 +57,8 @@ class Impact:
     primary_router_ids: list[int]
     customer_ids: set[int] = field(default_factory=set)
     down_customer_ids: set[int] = field(default_factory=set)
+    circuits_down: int = 0
+    links_down: int = 0
 
     def summary(self) -> dict:
         return {
@@ -54,6 +66,8 @@ class Impact:
             "primary_router_ids": self.primary_router_ids,
             "customer_count": len(self.customer_ids),
             "customers_down": len(self.down_customer_ids),
+            "circuits_down": self.circuits_down,
+            "links_down": self.links_down,
         }
 
     def detail(self) -> dict:
@@ -118,18 +132,41 @@ def compute_impacts(db: Session, incidents: list[Incident]) -> dict[int, Impact]
         .all()
     } if peering_ids else {}
 
-    router_ids = {i.router_id for i in candidates} | {rid for ends in peering_endpoints.values() for rid in ends}
+    # A corridor root cause (app.rca) affects the routers on the circuits it
+    # takes down, not the optical element it's attached to.
+    from app.rca import root_scopes
+
+    corridor_scopes = root_scopes(db, [i for i in candidates if i.corridor_id is not None])
+
+    router_ids = (
+        {i.router_id for i in candidates}
+        | {rid for ends in peering_endpoints.values() for rid in ends}
+        | {rid for scope in corridor_scopes.values() for rid in scope.router_ids}
+    )
     routers = {
         rid: (rtype, status, parent)
         for rid, rtype, status, parent in db.query(Router.id, Router.router_type, Router.status, Router.parent_router_id)
         .filter(Router.id.in_(router_ids))
         .all()
     }
+    optical = {
+        rid
+        for (rid,) in db.query(Router.id).filter(
+            Router.id.in_(router_ids), Router.element_role.isnot(None), Router.element_role != ElementRole.ROUTER
+        )
+    }
 
     scopes: dict[int, list[int]] = {}
     for incident in candidates:
-        if incident.peering_id is not None and incident.peering_id in peering_endpoints:
+        if incident.id in corridor_scopes:
+            if corridor_scopes[incident.id].router_ids:
+                scopes[incident.id] = sorted(corridor_scopes[incident.id].router_ids)
+        elif incident.peering_id is not None and incident.peering_id in peering_endpoints:
             scopes[incident.id] = peering_endpoints[incident.peering_id]
+        elif incident.router_id in optical:
+            # An optical element's own alarm: what it costs is the corridor
+            # root's business (above); on its own it names no router.
+            continue
         elif routers.get(incident.router_id, (None,))[0] == RouterType.PRIMARY:
             scopes[incident.id] = [incident.router_id]
 
@@ -169,6 +206,13 @@ def compute_impacts(db: Session, incidents: list[Incident]) -> dict[int, Impact]
                 impact.down_customer_ids.add(incident.router_id)
         else:
             continue
+        if incident.id in corridor_scopes:
+            impact.circuits_down = len(corridor_scopes[incident.id].circuit_ids)
+            impact.links_down = len(corridor_scopes[incident.id].peering_ids)
+            if impact.links_down:
+                # Whole L3 links lost - a backbone outage even with no
+                # customer (yet) behind those routers.
+                impact.level = "outage"
         if impact.down_customer_ids:
             impact.level = "outage"
         impacts[incident.id] = impact

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.impact import impact_totals
 from app.models import (
+    ElementRole,
     Incident,
     IncidentStage,
     IncidentStatus,
@@ -29,8 +30,18 @@ def summary(db: Session = Depends(get_db)):
     fleet and what the dashboard is meant to represent. Customer CPE detail
     lives on the map/router list instead, so it doesn't drown out the
     backbone signal here."""
-    primary_routers = db.query(Router).filter(Router.router_type == RouterType.PRIMARY)
+    is_router = or_(Router.element_role.is_(None), Router.element_role == ElementRole.ROUTER)
+    primary_routers = db.query(Router).filter(Router.router_type == RouterType.PRIMARY, is_router)
     total_routers = primary_routers.count()
+    optical = db.query(Router).filter(~is_router)
+    total_optical_elements = optical.count()
+    optical_elements_alarmed = (
+        db.query(Incident.router_id)
+        .join(Router, Incident.router_id == Router.id)
+        .filter(~is_router, Incident.status == IncidentStatus.OPEN)
+        .distinct()
+        .count()
+    )
     routers_up = primary_routers.filter(Router.status == RouterStatus.UP).count()
     routers_down = primary_routers.filter(Router.status == RouterStatus.DOWN).count()
     routers_flapping = primary_routers.filter(Router.status == RouterStatus.FLAPPING).count()
@@ -60,6 +71,8 @@ def summary(db: Session = Depends(get_db)):
 
     return StatsSummary(
         total_routers=total_routers,
+        total_optical_elements=total_optical_elements,
+        optical_elements_alarmed=optical_elements_alarmed,
         total_customer_routers=total_customer_routers,
         routers_up=routers_up,
         routers_down=routers_down,

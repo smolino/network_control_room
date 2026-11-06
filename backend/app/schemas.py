@@ -115,6 +115,9 @@ class IncidentImpact(BaseModel):
     primary_router_ids: list[int]
     customer_count: int
     customers_down: int
+    # Corridor root causes (app.rca): client circuits and whole L3 links lost.
+    circuits_down: int = 0
+    links_down: int = 0
 
 
 class IncidentImpactDetail(IncidentImpact):
@@ -124,9 +127,10 @@ class IncidentImpactDetail(IncidentImpact):
 
 
 class FaultPoint(BaseModel):
-    kind: str  # "repeater" | "router"
+    kind: str  # "repeater" | "router" | "site" (a corridor element's site)
     label: str  # "R3", or the router's hostname at either end of the run
     repeater_index: int | None = None
+    site: str | None = None  # corridor faults: the element's site name
     km_from_a: float
     latitude: float
     longitude: float
@@ -136,7 +140,7 @@ class FaultLocation(BaseModel):
     """Which span of a peering's fiber run a fault is in - see
     app.fault_location."""
 
-    peering_id: int
+    peering_id: int | None = None
     router_a: str
     router_b: str
     distance_km: float | None = None
@@ -147,6 +151,15 @@ class FaultLocation(BaseModel):
     start: FaultPoint
     end: FaultPoint
     repeaters_to_check: list[str]
+    # Corridor root causes (app.rca) - see app.fault_location.locate_corridor_fault.
+    corridor_id: int | None = None
+    corridor: str | None = None
+    diagnosis: str | None = None  # CABLE-CUT, AMP-FAIL, ...
+    element: bool = False  # the fault is one element (start == end), not a span
+    provider: str | None = None
+    a_end: str | None = None
+    b_end: str | None = None
+    provider_circuit_id: str | None = None
 
 
 class IncidentOut(BaseModel):
@@ -383,7 +396,11 @@ class StatsTimeseries(BaseModel):
 
 
 class StatsSummary(BaseModel):
+    # Routers only - optical elements (transponders, terminals, amplifiers)
+    # are counted separately.
     total_routers: int
+    total_optical_elements: int = 0
+    optical_elements_alarmed: int = 0
     total_customer_routers: int
     routers_up: int
     routers_down: int
@@ -617,6 +634,21 @@ class CircuitOut(BaseModel):
     peering_id: int | None = None
 
 
+class CorridorFaultOut(BaseModel):
+    """An open root cause on this corridor (see app.rca)."""
+
+    incident_id: int
+    kind: str
+    device_id: int
+    span_seq: int | None = None
+    stage: str | None = None
+    priority: str | None = None
+    summary: str | None = None
+    circuit_ids: list[int] = []
+    peering_ids: list[int] = []
+    router_ids: list[int] = []
+
+
 class CorridorOut(BaseModel):
     id: int
     name: str
@@ -628,6 +660,8 @@ class CorridorOut(BaseModel):
     route: list[RoutePointOut]
     spans: list[SpanOut]
     peering_ids: list[int] = []
+    # Open root causes on this corridor - drawn on the map.
+    faults: list[CorridorFaultOut] = []
     paths: list[OpticalPathOut] = []
     circuits: list[CircuitOut] = []
 

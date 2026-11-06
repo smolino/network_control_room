@@ -43,6 +43,22 @@ const PRIORITY_RANK = { P1: 1, P2: 2, P3: 3, P4: 4 };
 
 const IMPACT_COLOR = { outage: "#f87171", degraded: "#facc15" };
 
+// A corridor root cause (see backend/app/rca.py) takes whole circuits and L3
+// links down - that comes first, customers (if any are behind those
+// routers) after.
+export function impactLabel(impact) {
+  const customers =
+    impact.customers_down > 0
+      ? `${impact.customers_down}/${impact.customer_count} customers down`
+      : `${impact.customer_count} customer${impact.customer_count === 1 ? "" : "s"} at risk`;
+  if (!impact.links_down && !impact.circuits_down) return customers;
+  const parts = [];
+  if (impact.links_down) parts.push(`${impact.links_down} L3 link${impact.links_down === 1 ? "" : "s"} down`);
+  if (impact.circuits_down) parts.push(`${impact.circuits_down} circuit${impact.circuits_down === 1 ? "" : "s"}`);
+  if (impact.customer_count) parts.push(customers);
+  return parts.join(" · ");
+}
+
 // Open, service-affecting incidents only (see backend/app/impact.py) -
 // everything else has no blast radius. Sort key: customers actually down
 // first, then everyone merely degraded.
@@ -54,10 +70,7 @@ function impactScore(incident) {
 function ImpactCell({ incident, onShowImpact }) {
   const impact = incident.impact;
   if (!impact) return <span style={{ color: "#5b6479" }}>—</span>;
-  const label =
-    impact.customers_down > 0
-      ? `${impact.customers_down}/${impact.customer_count} customers down`
-      : `${impact.customer_count} customer${impact.customer_count === 1 ? "" : "s"} at risk`;
+  const label = impactLabel(impact);
   return (
     <div>
       <span
@@ -91,8 +104,26 @@ export function FaultLocationNote({ location, onLocate }) {
   const { start, end } = location;
   return (
     <div style={{ fontSize: "0.74rem", color: "#fb923c", marginTop: "0.25rem" }}>
-      📍 Faulty span <strong>{start.label} → {end.label}</strong> (span {location.segment_index + 1} of{" "}
-      {location.segment_count}, km {start.km_from_a}–{end.km_from_a} of {location.distance_km})
+      {location.corridor_id && location.element ? (
+        // A corridor root cause on one element (amplifier, transponder, ...).
+        <>
+          📍 {location.diagnosis} at <strong>{start.label}</strong> ({start.site}, km {start.km_from_a} of{" "}
+          {location.distance_km} on {location.corridor})
+        </>
+      ) : location.corridor_id ? (
+        // A corridor root cause on a span of rented fiber.
+        <>
+          📍 {location.diagnosis} on span <strong>{location.segment_index + 1}</strong> of {location.segment_count}:{" "}
+          <strong>{start.label} → {end.label}</strong> ({location.provider || "provider unknown"}
+          {location.a_end || location.b_end ? ` ${location.a_end || "?"}–${location.b_end || "?"}` : ""}, km{" "}
+          {start.km_from_a}–{end.km_from_a} of {location.distance_km} on {location.corridor})
+        </>
+      ) : (
+        <>
+          📍 Faulty span <strong>{start.label} → {end.label}</strong> (span {location.segment_index + 1} of{" "}
+          {location.segment_count}, km {start.km_from_a}–{end.km_from_a} of {location.distance_km})
+        </>
+      )}
       {location.repeaters_to_check.length > 0 && <> · check {location.repeaters_to_check.join(" & ")}</>}
       {onLocate && (
         <>
