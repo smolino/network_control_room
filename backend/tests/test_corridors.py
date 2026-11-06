@@ -140,3 +140,49 @@ def test_import_is_idempotent(raw):
         assert len(members) == 12 and "HundredGigE0/7/0/2" in members
         terminal = db.query(Router).filter(Router.hostname == "t-bio01-mad01-bio01").one()
         assert terminal.element_role.value == "terminal" and terminal.site.code == "BIO01"
+
+
+def test_export_round_trips(raw):
+    """Backup = export_spec; restore = import it into an empty fleet. The
+    restored corridor must be the same corridor."""
+    from app.corridors import export_spec, import_corridor
+    from app.db import Base, SessionLocal, engine
+    from app.models import ClientCircuit, Corridor, Interface, OpticalPath, PathHop, Port
+
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    original = CorridorSpec.model_validate(raw)
+    with SessionLocal() as db:
+        import_corridor(db, original)
+        db.commit()
+        exported = export_spec(db, db.query(Corridor).one())
+
+    def norm(spec):
+        d = spec.model_dump()
+        d["devices"] = sorted(
+            ({**x, "ports": sorted(x["ports"], key=lambda p: p["name"]), "cards": sorted(x["cards"], key=lambda c: c["slot"])} for x in d["devices"]),
+            key=lambda x: x["hostname"],
+        )
+        d["circuits"] = sorted(d["circuits"], key=lambda c: (c["a_router"], c["a_router_port"]))
+        d["spans"] = [{**s, "length_km": None} for s in d["spans"]]  # computed on import when absent
+        return d
+
+    assert norm(exported) == norm(original)
+    a, b = build_plan(original), build_plan(exported)
+    assert a.chain == b.chain and [(p.name, p.hops) for p in a.paths] == [(p.name, p.hops) for p in b.paths]
+
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        result, _ = import_corridor(db, exported)
+        db.commit()
+        assert len(result.devices_created) == 15 and result.optical_paths == 20 and result.client_circuits == 6
+        assert db.query(PathHop).count() > 0 and db.query(Interface).count() == 12
+
+
+def test_router_upload_keeps_element_role():
+    from app.schemas import RouterIn
+
+    r = RouterIn.model_validate({"hostname": "a-1", "mgmt_ip": "10.0.0.9", "latitude": 1, "longitude": 2, "element_role": "ila"})
+    assert r.element_role.value == "ila"
+    assert RouterIn.model_validate({"hostname": "r", "mgmt_ip": "10.0.0.8", "latitude": 1, "longitude": 2}).element_role is None

@@ -192,6 +192,23 @@ export function fetchCorridors() {
   return getJSON("/corridors");
 }
 
+// A corridor as an import spec (backup) - POST it back to importCorridor to
+// rebuild it. See backend/app/corridors.py:export_spec.
+export function fetchCorridorSpec(id) {
+  return getJSON(`/corridors/${id}/spec`);
+}
+
+// Admin-only: dry run of a corridor import - the line chain, wavelengths and
+// paths it would build, or a 422 listing every problem in the spec.
+export function validateCorridor(spec) {
+  return postJSON("/corridors/validate", spec);
+}
+
+// Admin-only: idempotent corridor import (devices matched on mgmt_ip).
+export function importCorridor(spec, { pruneL1Peerings = false } = {}) {
+  return postJSON(`/corridors/import${pruneL1Peerings ? "?prune_l1_peerings=true" : ""}`, spec);
+}
+
 // Bulk idempotent upsert - same endpoints the trap simulator seeds the fleet
 // with on startup (see backend/app/api/routers.py, api/bgp.py). Adding a
 // router whose mgmt_ip already exists is a no-op; adding a peering that

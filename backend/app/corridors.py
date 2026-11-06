@@ -34,6 +34,7 @@ from app.bundles import ensure_bundles_for_peering, sync_bundle_members
 from app.models import (
     L1_ELEMENT_ROLES,
     BgpPeering,
+    InterfaceBundle,
     BgpSessionStatus,
     Card,
     ClientCircuit,
@@ -762,6 +763,112 @@ def delete_corridor(db: Session, corridor: Corridor) -> None:
         db.query(Card).filter(Card.device_id.in_(l1_ids)).delete(synchronize_session=False)
     db.delete(corridor)
     db.flush()
+
+
+def export_spec(db: Session, corridor: Corridor) -> CorridorSpec:
+    """The corridor as an import spec (the inverse of import_corridor) - for
+    backups: POST it to /api/corridors/import to rebuild the same corridor.
+    Card ports are derived on import, so only router/transponder ports are
+    listed."""
+    spans = corridor.spans
+    chain = [spans[0].from_device] + [s.to_device for s in spans] if spans else []
+    circuits = corridor.circuits
+    devices: list[Router] = []
+    for d in chain:
+        if d not in devices:
+            devices.append(d)
+    for c in circuits:
+        for port in (c.a_router_port, c.a_client_port, c.z_client_port, c.z_router_port):
+            if port.device not in devices:
+                devices.append(port.device)
+
+    sites: list[Site] = []
+    # A first, then the line's sites in order, then Z; POP-only devices
+    # (routers, transponders) sit at A or Z.
+    for d in chain:
+        if d.site is not None and d.site not in sites:
+            sites.append(d.site)
+    site_z = corridor.site_z
+    if site_z in sites:
+        sites.remove(site_z)
+        sites.append(site_z)
+
+    used_ports: dict[int, set[int]] = {}
+    for c in circuits:
+        for port in (c.a_router_port, c.a_client_port, c.z_client_port, c.z_router_port):
+            used_ports.setdefault(port.device_id, set()).add(port.id)
+
+    device_specs = []
+    for d in devices:
+        cards = sorted(db.query(Card).filter(Card.device_id == d.id), key=lambda c: c.slot)
+        ports = [
+            {"name": p.name, "kind": p.kind, "wavelength_nm": p.wavelength_nm}
+            for p in sorted(db.query(Port).filter(Port.device_id == d.id, Port.card_id.is_(None)), key=lambda p: p.id)
+            if p.kind in ("trunk", "client") or p.id in used_ports.get(d.id, set())
+        ]
+        device_specs.append(
+            {
+                "hostname": d.hostname,
+                "mgmt_ip": d.mgmt_ip,
+                "role": (d.element_role or ElementRole.ROUTER).value,
+                "vendor": d.vendor or "Cisco",
+                "model": d.model,
+                "site": d.site.code if d.site else (corridor.site_a.code),
+                "cards": [{"slot": c.slot, "type": c.card_type, "function": c.function, "direction": c.direction} for c in cards],
+                "ports": ports,
+            }
+        )
+
+    l3_links = []
+    for peering in db.query(BgpPeering).filter(BgpPeering.corridor_id == corridor.id).order_by(BgpPeering.id):
+        on_link = [c for c in circuits if c.peering_id == peering.id]
+        if not on_link:
+            continue
+        first = on_link[0]
+        a, z = first.a_router_port.device, first.z_router_port.device
+        bundle = {
+            b.router_id: b
+            for b in db.query(InterfaceBundle).filter(InterfaceBundle.peering_id == peering.id)
+        }
+        members = bundle[a.id].members if a.id in bundle else []
+        l3_links.append(
+            {
+                "router_a": a.hostname,
+                "router_z": z.hostname,
+                "bundle_a": bundle[a.id].name if a.id in bundle else "Bundle-Ether1",
+                "bundle_z": bundle[z.id].name if z.id in bundle else "Bundle-Ether1",
+                "member_bandwidth_mbps": members[0].bandwidth_mbps if members else 100000,
+            }
+        )
+
+    return CorridorSpec.model_validate(
+        {
+            "name": corridor.name,
+            "description": corridor.description,
+            "assumptions": json.loads(corridor.assumptions or "[]"),
+            "sites": [
+                {"code": s.code, "name": s.name, "kind": s.kind, "city": s.city, "country": s.country,
+                 "latitude": s.latitude, "longitude": s.longitude}
+                for s in sites
+            ],
+            "devices": device_specs,
+            "spans": [
+                {"seq": s.seq, "from_device": s.from_device.hostname, "to_device": s.to_device.hostname,
+                 "provider": s.provider, "a_end": s.a_end, "b_end": s.b_end, "length_km": s.length_km,
+                 "provider_circuit_id": s.provider_circuit_id}
+                for s in spans
+            ],
+            "circuits": [
+                {"wavelength_nm": c.wavelength_nm,
+                 "a_router": c.a_router_port.device.hostname, "a_router_port": c.a_router_port.name,
+                 "a_transponder": c.a_client_port.device.hostname, "a_client_port": c.a_client_port.name,
+                 "z_transponder": c.z_client_port.device.hostname, "z_client_port": c.z_client_port.name,
+                 "z_router": c.z_router_port.device.hostname, "z_router_port": c.z_router_port.name}
+                for c in circuits
+            ],
+            "l3_links": l3_links,
+        }
+    )
 
 
 def empty_carried() -> CarriedOut:

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from app import rca, topology_graph
 from app.auth import require_admin
-from app.corridors import CorridorSpecError, build_plan, corridor_out, delete_corridor, import_corridor
+from app.corridors import CorridorSpecError, build_plan, corridor_out, delete_corridor, export_spec, import_corridor
 from app.db import get_db
 from app.models import Corridor, FiberSpan, Incident, IncidentStatus, Router
 from app.schemas import CarriedOut, CorridorImportOut, CorridorOut, CorridorSpec, DiagnosisOut
@@ -40,6 +40,13 @@ def list_corridors(db: Session = Depends(get_db)):
 def get_corridor(corridor_id: int, db: Session = Depends(get_db)):
     """With every optical path hop by hop and every client circuit."""
     return corridor_out(db, _get(db, corridor_id), detail=True)
+
+
+@router.get("/{corridor_id}/spec", response_model=CorridorSpec)
+def corridor_spec(corridor_id: int, db: Session = Depends(get_db)):
+    """The corridor as an import spec - a backup that POST /import rebuilds
+    exactly (Add Fleet > Bulk upload > Export)."""
+    return export_spec(db, _get(db, corridor_id))
 
 
 @router.post("/validate", dependencies=[Depends(require_admin)])

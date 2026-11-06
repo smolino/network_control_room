@@ -547,6 +547,25 @@ API: `GET /api/corridors[/{id}]`, `POST /api/corridors/import|validate`,
 On the map (L1 layer) a corridor is drawn through its real sites, with a
 tooltip per span. Tests: `backend/tests/test_corridors.py`.
 
+## Backing up and restoring the fleet
+
+**Add Fleet > Bulk upload > Export / back up the fleet** downloads the fleet
+in the formats that tab uploads:
+
+* `ncr-routers-<date>.csv` - every router, customer and optical element, in
+  the router upload format plus an `element_role` column (`transponder`,
+  `terminal`, `ila`; empty for a router), so optical elements come back as
+  what they are;
+* `ncr-bgp-links-<date>.csv` - BGP links with distance and repeater count
+  (links carried by an optical corridor are in the corridor file instead);
+* `ncr-corridor-<name>-<date>.json` per corridor - its sites, cards, spans,
+  circuits and L3 links (`GET /api/corridors/{id}/spec`), the exact inverse
+  of the import.
+
+To restore, upload them on the same tab in that order: routers, links, then
+each corridor (**Bulk upload optical corridor (JSON)** validates the file
+first, then imports it).
+
 ## Alarm classes and the equipment filter
 
 Every trap gets an **alarm class** (`backend/app/snmp/alarm_classes.py`),

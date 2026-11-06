@@ -38,6 +38,10 @@ class RouterIn(BaseModel):
     city: str | None = None
     latitude: float
     longitude: float
+    # Optical elements (transponder/terminal/ila) - see models.ElementRole.
+    # Empty = a router. Lets a fleet export (Add Fleet > Bulk upload) bring
+    # them back as what they are.
+    element_role: ElementRole | None = None
 
 
 class RouterOut(BaseModel):
